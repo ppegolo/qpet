@@ -125,3 +125,56 @@ def test_constrain_dipole_moves_dipole_and_preserves_charge(water_ri):
 
     np.testing.assert_allclose(fixed.dipole(r_cnc), mu_target, atol=1e-9)
     assert abs(float(fixed.charge()) - q_before) < 1e-9
+
+
+def test_select_atoms_partition_is_additive(water_ri):
+    """
+    The core masking invariant: partitioning atoms into A and B and summing
+    the two sub-densities' potentials must reproduce the full potential
+    exactly. This is what lets a consumer attribute a complex's density to one
+    partner while the other stays in the model's context — a broken slice or
+    a leaked/duplicated nucleus would show here.
+    """
+    _, _, auxmol, coeffs = water_ri  # water: O=0, H=1, H=2
+    rho = RIDensity(auxmol, coeffs)
+
+    a = rho.select_atoms([0])  # oxygen
+    b = rho.select_atoms([1, 2])  # both hydrogens
+
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(-4.0, 4.0, size=(50, 3))
+
+    np.testing.assert_allclose(
+        a.potential(pts) + b.potential(pts), rho.potential(pts), atol=1e-10
+    )
+    np.testing.assert_allclose(
+        a.density(pts) + b.density(pts), rho.density(pts), atol=1e-12
+    )
+
+
+def test_select_atoms_geometry_and_charge(water_ri):
+    """
+    A sub-density carries only the selected atoms' geometry, and its
+    integrated electronic charge is the sum of the parts (partition additivity
+    of the electron count).
+    """
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+
+    o = rho.select_atoms([0])
+    assert o.auxmol.natm == 1
+    np.testing.assert_array_equal(o.atomic_numbers, [8])
+    np.testing.assert_allclose(o.positions, rho.positions[[0]])
+
+    h2 = rho.select_atoms([1, 2])
+    assert abs(float(o.charge()) + float(h2.charge()) - float(rho.charge())) < 1e-10
+
+
+def test_select_atoms_validates_input(water_ri):
+    """Empty selection and out-of-range indices must fail loudly."""
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    with pytest.raises(ValueError, match="empty"):
+        rho.select_atoms([])
+    with pytest.raises(IndexError, match="out of range"):
+        rho.select_atoms([0, 3])
