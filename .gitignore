@@ -39,3 +39,6 @@ venv/
 # stay tracked; gitignore only hides new untracked files)
 examples/**/*.cube
 examples/**/*.pt
+
+# training checkpoints (kept locally, never committed)
+*.ckpt

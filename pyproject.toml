@@ -36,20 +36,19 @@ classifiers = [
 
 [build-system]
 requires = [
-  "setuptools >= 77",
-  "setuptools_scm>=8",
-  "wheel",
+  "hatchling",
+  "hatch-vcs",
 ]
-build-backend = "setuptools.build_meta"
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.version]
+source = "vcs"
 
-[tool.setuptools.package-data]
-qpet = ["py.typed"]
+[tool.hatch.build.hooks.vcs]
+version-file = "src/qpet/_version.py"
 
-[tool.setuptools_scm]
-version_file = "src/qpet/_version.py"
+[tool.hatch.build.targets.wheel]
+packages = ["src/qpet"]
 
 # ----------------------------
 # Ruff: formatter + linter
@@ -57,7 +56,7 @@ version_file = "src/qpet/_version.py"
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-# setuptools_scm-generated, gitignored
+# hatch-vcs-generated, gitignored
 extend-exclude = ["src/qpet/_version.py"]
 
 [tool.ruff.lint]
