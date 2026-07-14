@@ -14,7 +14,15 @@ from .conversions import (
     system_to_atom_string,
     system_to_pyscf,
 )
-from .cube import write_cube, write_density_cube, write_esp_cube
+from .cube import (
+    BeckeGrid,
+    CubeData,
+    becke_grid,
+    read_cube,
+    write_cube,
+    write_density_cube,
+    write_esp_cube,
+)
 from .fields import DMDensity, RIDensity, ScalarField
 from .model import DensityModel
 from .moments import (
@@ -48,6 +56,10 @@ __all__ = [
     "write_cube",
     "write_density_cube",
     "write_esp_cube",
+    "read_cube",
+    "CubeData",
+    "becke_grid",
+    "BeckeGrid",
     "BOHR_TO_ANG",
     "ase_to_pyscf",
     "pyscf_to_ase",

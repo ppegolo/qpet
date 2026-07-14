@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
-from pyscf import df, gto, scf
+from pyscf import gto, scf
+
+from qpet import RIDensity
 
 
 @pytest.fixture(scope="session")
@@ -24,9 +25,5 @@ def water_ri():
         verbose=0,
     )
     dm = scf.RHF(mol).run(verbose=0).make_rdm1()
-
-    auxmol = df.addons.make_auxmol(mol, "def2-svp-jkfit")
-    j2c = auxmol.intor("int2c2e")
-    j3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")
-    coeffs = np.linalg.solve(j2c, np.einsum("ijP,ij->P", j3c, dm))
-    return mol, dm, auxmol, coeffs
+    rho = RIDensity.from_dm(mol, dm, "def2-svp-jkfit")
+    return mol, dm, rho.auxmol, rho.coeffs

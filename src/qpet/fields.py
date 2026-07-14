@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Protocol
 
 import numpy as np
-from pyscf import gto
+from pyscf import df, gto
 
 from qpet.conversions import BOHR_TO_ANG
 
@@ -197,6 +197,28 @@ class RIDensity:
             )
         self.auxmol = auxmol
         self.coeffs = coeffs
+
+    @classmethod
+    def from_dm(cls, mol: gto.Mole, dm: np.ndarray, aux_basis: str) -> RIDensity:
+        """
+        Coulomb-metric RI fit of a density matrix.
+
+        This is the resolution-of-identity that density ML models are trained
+        to reproduce, so it provides the reference RI density for a given
+        quantum-chemistry result. Incore 3-center integrals: peak memory
+        nao² × naux floats.
+
+        :param mol: Built PySCF ``Mole`` (orbital basis).
+        :param dm: Density matrix in AO basis, shape (nao, nao).
+        :param aux_basis: Auxiliary basis set name
+            (e.g. ``"def2-universal-jfit"``).
+        :return: Fitted :class:`RIDensity`.
+        """
+        auxmol = df.addons.make_auxmol(mol, aux_basis)
+        j2c = auxmol.intor("int2c2e")
+        j3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")
+        coeffs = np.linalg.solve(j2c, np.einsum("ijP,ij->P", j3c, dm))
+        return cls(auxmol, coeffs)
 
     @property
     def positions(self) -> np.ndarray:

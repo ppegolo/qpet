@@ -4,17 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from pyscf import df, dft, gto
+from pyscf import dft, gto
 
-from qpet import dm_from_auxdensity
+from qpet import RIDensity, dm_from_auxdensity
 from qpet.moments import compute_S_vector, normalize_charge_additive
-
-
-def _fit_coulomb(mol: gto.Mole, auxmol: gto.Mole, dm: np.ndarray) -> np.ndarray:
-    """Coulomb-metric RI fit of a density matrix."""
-    j2c = auxmol.intor("int2c2e")
-    j3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")
-    return np.linalg.solve(j2c, np.einsum("ijP,ij->P", j3c, dm))
 
 
 def _run_scf(mol: gto.Mole, xc: str, dm0: np.ndarray | None = None):
@@ -54,7 +47,7 @@ def test_guess_from_converged_density_accelerates_scf(water_ri, xc, strict):
     mf_ref, n_ref = _run_scf(mol, xc)
     assert mf_ref.converged
 
-    coeffs = _fit_coulomb(mol, auxmol, mf_ref.make_rdm1())
+    coeffs = RIDensity.from_dm(mol, mf_ref.make_rdm1(), "def2-svp-jkfit").coeffs
     dm0 = dm_from_auxdensity(mol, auxmol, coeffs, xc=xc)
 
     mf_ml, n_ml = _run_scf(mol, xc, dm0=dm0)

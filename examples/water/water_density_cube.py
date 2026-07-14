@@ -35,7 +35,7 @@ ORBITAL_BASIS = "def2-svp"
 
 # Model-specific configuration. These values must match the auxiliary basis
 # and output head the model was trained with -- edit them for your model.
-MODEL_FILE = HERE / "pet-scfbench.pt"
+MODEL_FILE = HERE / "pet-scfbench-esp.pt"
 OUTPUT_NAME = "mtt::rho_c_jfit_coulomb"
 BASIS_NAME = "def2-universal-jfit"
 

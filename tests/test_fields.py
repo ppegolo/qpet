@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from pyscf import dft
 
-from qpet import BOHR_TO_ANG, DMDensity, RIDensity
+from qpet import DMDensity, RIDensity, becke_grid
 
 
 def test_ri_density_integrates_to_electron_count(water_ri):
@@ -17,11 +16,8 @@ def test_ri_density_integrates_to_electron_count(water_ri):
     mol, _, auxmol, coeffs = water_ri
     rho = RIDensity(auxmol, coeffs)
 
-    grid = dft.gen_grid.Grids(mol)
-    grid.level = 3
-    grid.build()
-    values = rho.density(grid.coords * BOHR_TO_ANG)
-    n_elec = float(np.sum(grid.weights * values))
+    grid = becke_grid(mol, level=3)
+    n_elec = float(np.sum(grid.weights * rho.density(grid.points)))
     assert abs(n_elec - mol.nelectron) < 0.05
 
 

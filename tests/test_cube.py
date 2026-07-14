@@ -11,7 +11,7 @@ from pyscf import gto, scf
 from qpet import BOHR_TO_ANG, DMDensity
 from qpet.cube import (
     _auto_grid,
-    _grid_points_ang,
+    read_cube,
     write_cube,
     write_density_cube,
     write_esp_cube,
@@ -28,49 +28,6 @@ def water_dm() -> DMDensity:
     ).build()
     dm = scf.RHF(mol).run().make_rdm1()
     return DMDensity(mol, dm)
-
-
-def _parse_cube(path: Path) -> dict:
-    """Minimal CUBE parser for round-trip tests."""
-    with open(path) as f:
-        lines = f.read().splitlines()
-
-    title1 = lines[0]
-    title2 = lines[1]
-    parts = lines[2].split()
-    natoms = int(parts[0])
-    origin = np.array([float(x) for x in parts[1:4]])
-
-    axes = np.zeros((3, 3))
-    dims = []
-    for i in range(3):
-        p = lines[3 + i].split()
-        dims.append(int(p[0]))
-        axes[i] = [float(x) for x in p[1:4]]
-
-    z = []
-    pos = []
-    for i in range(natoms):
-        p = lines[6 + i].split()
-        z.append(int(p[0]))
-        pos.append([float(p[2]), float(p[3]), float(p[4])])
-
-    data_tokens: list[float] = []
-    for line in lines[6 + natoms :]:
-        data_tokens.extend(float(x) for x in line.split())
-    data = np.array(data_tokens).reshape(dims)
-
-    return {
-        "title1": title1,
-        "title2": title2,
-        "natoms": natoms,
-        "origin_bohr": origin,
-        "axes_bohr": axes,
-        "dims": tuple(dims),
-        "z": np.array(z),
-        "positions_bohr": np.array(pos),
-        "field": data,
-    }
 
 
 class TestAutoGrid:
@@ -103,14 +60,14 @@ class TestWriteCubeRoundTrip:
         out = tmp_path / "zero.cube"
         write_cube(out, water_dm, field, origin, axes)
 
-        parsed = _parse_cube(out)
-        assert parsed["dims"] == dims
-        assert parsed["natoms"] == water_dm.mol.natm
-        np.testing.assert_allclose(parsed["origin_bohr"], origin, atol=1e-5)
-        np.testing.assert_allclose(parsed["axes_bohr"], axes, atol=1e-5)
-        np.testing.assert_array_equal(parsed["z"], water_dm.atomic_numbers)
+        parsed = read_cube(out)
+        assert parsed.dims == dims
+        assert len(parsed.atomic_numbers) == water_dm.mol.natm
+        np.testing.assert_allclose(parsed.origin_bohr, origin, atol=1e-5)
+        np.testing.assert_allclose(parsed.axes_bohr, axes, atol=1e-5)
+        np.testing.assert_array_equal(parsed.atomic_numbers, water_dm.atomic_numbers)
         np.testing.assert_allclose(
-            parsed["positions_bohr"], water_dm.positions / BOHR_TO_ANG, atol=1e-5
+            parsed.positions_bohr, water_dm.positions / BOHR_TO_ANG, atol=1e-5
         )
 
     def test_field_values_preserved(self, tmp_path: Path, water_dm: DMDensity):
@@ -120,8 +77,8 @@ class TestWriteCubeRoundTrip:
         out = tmp_path / "rand.cube"
         write_cube(out, water_dm, field, origin, axes)
 
-        parsed = _parse_cube(out)
-        np.testing.assert_allclose(parsed["field"], field, rtol=1e-4, atol=1e-7)
+        parsed = read_cube(out)
+        np.testing.assert_allclose(parsed.field, field, rtol=1e-4, atol=1e-7)
 
 
 class TestDensityCube:
@@ -142,15 +99,13 @@ class TestDensityCube:
         """Density on the cube grid must be positive at points near the O atom."""
         out = tmp_path / "rho.cube"
         write_density_cube(water_dm, out, padding=2.0, spacing=0.4)
-        parsed = _parse_cube(out)
+        parsed = read_cube(out)
 
         # Locate cube voxel closest to O nucleus (atom 0).
-        pts_ang = _grid_points_ang(
-            parsed["origin_bohr"], parsed["axes_bohr"], parsed["dims"]
-        )
+        pts_ang = parsed.points()
         d2 = np.sum((pts_ang - water_dm.positions[0]) ** 2, axis=1)
         i_near = int(np.argmin(d2))
-        rho_flat = parsed["field"].reshape(-1)
+        rho_flat = parsed.field.reshape(-1)
         assert rho_flat[i_near] > 0.0
         # The peak voxel should hold the largest value on the grid.
         assert rho_flat[i_near] == rho_flat.max()
@@ -158,23 +113,19 @@ class TestDensityCube:
     def test_density_matches_direct_eval(self, tmp_path: Path, water_dm: DMDensity):
         out = tmp_path / "rho.cube"
         write_density_cube(water_dm, out, padding=2.0, spacing=0.4)
-        parsed = _parse_cube(out)
+        parsed = read_cube(out)
 
-        pts_ang = _grid_points_ang(
-            parsed["origin_bohr"], parsed["axes_bohr"], parsed["dims"]
-        )
-        rho_direct = water_dm.density(pts_ang).reshape(parsed["dims"])
-        np.testing.assert_allclose(parsed["field"], rho_direct, rtol=1e-4, atol=1e-7)
+        pts_ang = parsed.points()
+        rho_direct = water_dm.density(pts_ang).reshape(parsed.dims)
+        np.testing.assert_allclose(parsed.field, rho_direct, rtol=1e-4, atol=1e-7)
 
 
 class TestEspCube:
     def test_esp_matches_direct_eval(self, tmp_path: Path, water_dm: DMDensity):
         out = tmp_path / "esp.cube"
         write_esp_cube(water_dm, out, padding=2.0, spacing=0.5)
-        parsed = _parse_cube(out)
+        parsed = read_cube(out)
 
-        pts_ang = _grid_points_ang(
-            parsed["origin_bohr"], parsed["axes_bohr"], parsed["dims"]
-        )
-        v_direct = water_dm.potential(pts_ang).reshape(parsed["dims"])
-        np.testing.assert_allclose(parsed["field"], v_direct, rtol=1e-4, atol=1e-6)
+        pts_ang = parsed.points()
+        v_direct = water_dm.potential(pts_ang).reshape(parsed.dims)
+        np.testing.assert_allclose(parsed.field, v_direct, rtol=1e-4, atol=1e-6)
