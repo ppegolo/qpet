@@ -1,0 +1,40 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Mac OS system files
+.DS_Store
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# setuptools_scm generated version file
+src/qpet/_version.py
+
+# Unit test / coverage / type checking
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+.cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Jupyter
+.ipynb_checkpoints
+
+# example outputs
+examples/*.cube
+examples/*.pt
