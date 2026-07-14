@@ -17,6 +17,7 @@ Points are given in Angstrom; all returned values are in atomic units.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 import numpy as np
@@ -219,6 +220,50 @@ class RIDensity:
         j3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")
         coeffs = np.linalg.solve(j2c, np.einsum("ijP,ij->P", j3c, dm))
         return cls(auxmol, coeffs)
+
+    def select_atoms(self, atom_indices: Sequence[int]) -> RIDensity:
+        """
+        Restrict the density to a subset of atoms.
+
+        Returns a new :class:`RIDensity` whose auxiliary molecule contains only
+        the selected atoms and whose coefficients are the corresponding slice.
+        Both the nuclear positions and the electronic expansion restrict, so
+        :meth:`potential` gives the electrostatic potential produced by exactly
+        those atoms (in the density predicted for the full system) — the
+        primitive for attributing a complex's density to one partner while
+        keeping the other in the model's context.
+
+        For a partition of all atoms into A and B this is exact and additive:
+        ``select_atoms(A).potential(p) + select_atoms(B).potential(p)
+        == potential(p)``.
+
+        :param atom_indices: Atom indices to keep (into this density's atoms).
+        :return: Sub-density on the selected atoms.
+        """
+        idx = sorted({int(i) for i in atom_indices})
+        if not idx:
+            raise ValueError("atom_indices is empty; nothing to select.")
+        n_atoms = self.auxmol.natm
+        if idx[0] < 0 or idx[-1] >= n_atoms:
+            raise IndexError(
+                f"atom index out of range for {n_atoms}-atom density: {idx}"
+            )
+
+        aoslice = self.auxmol.aoslice_by_atom()  # (natm, 4): sh0, sh1, ao0, ao1
+        ao_keep = np.concatenate([np.arange(aoslice[a, 2], aoslice[a, 3]) for a in idx])
+
+        sub = gto.Mole()
+        sub.atom = [self.auxmol._atom[a] for a in idx]
+        sub.basis = self.auxmol.basis
+        sub.unit = "Bohr"  # ._atom coordinates are in Bohr
+        sub.charge = 0
+        # Auxiliary mol is used only for integrals, never SCF; pick a valid
+        # spin so build() accepts odd electron counts.
+        sub.spin = int(sum(self.auxmol.atom_charge(a) for a in idx)) % 2
+        sub.verbose = 0
+        sub.build()
+
+        return RIDensity(sub, self.coeffs[ao_keep])
 
     @property
     def positions(self) -> np.ndarray:
