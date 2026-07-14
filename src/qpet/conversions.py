@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 from pyscf import gto
 from pyscf.data import elements
 from pyscf.lib.parameters import BOHR as BOHR_TO_ANG
@@ -66,6 +67,8 @@ def pyscf_to_system(
 def system_to_pyscf(
     system: System,
     basis: str,
+    charge: int = 0,
+    spin: int | None = None,
     verbose: int = 0,
 ) -> gto.Mole:
     """
@@ -73,12 +76,19 @@ def system_to_pyscf(
 
     :param system: metatomic System object
     :param basis: Basis set name for PySCF
+    :param charge: Total molecular charge
+    :param spin: Number of unpaired electrons (2S); ``None`` lets PySCF
+        auto-determine the ground-state multiplicity from the electron count
     :param verbose: PySCF verbosity level
     :return: Built PySCF Mole object
     """
     atom_str = system_to_atom_string(system)
-    mol = gto.M(atom=atom_str, basis=basis, verbose=verbose)
-    return mol.build()
+    return gto.M(atom=atom_str, basis=basis, charge=charge, spin=spin, verbose=verbose)
+
+
+def _format_atom_line(symbol: str, pos: np.ndarray) -> str:
+    """Single atom line for PySCF: ``"X  x  y  z"`` in Angstrom (8-decimal)."""
+    return f"{symbol}  {pos[0]:.8f}  {pos[1]:.8f}  {pos[2]:.8f}"
 
 
 def system_to_atom_string(system: System) -> str:
@@ -89,23 +99,20 @@ def system_to_atom_string(system: System) -> str:
     :return: Multi-line string with element symbols and Cartesian coordinates
         formatted for PySCF molecule construction (positions in Angstrom)
     """
-    atoms = []
     types = system.types.detach().cpu().numpy()
     positions = system.positions.detach().cpu().numpy()
 
-    for i in range(len(types)):
-        symbol = elements.ELEMENTS[int(types[i])]
-        x, y, z = positions[i]
-        atoms.append(f"{symbol}  {x:.8f}  {y:.8f}  {z:.8f}")
-
-    return "\n".join(atoms)
+    return "\n".join(
+        _format_atom_line(elements.ELEMENTS[int(types[i])], positions[i])
+        for i in range(len(types))
+    )
 
 
 def ase_to_pyscf(
     atoms: ase.Atoms,
     basis: str,
     charge: int = 0,
-    spin: int = 0,
+    spin: int | None = None,
     verbose: int = 0,
 ) -> gto.Mole:
     """
@@ -114,19 +121,18 @@ def ase_to_pyscf(
     :param atoms: ASE Atoms object (positions in Angstrom)
     :param basis: Basis set name for PySCF
     :param charge: Total molecular charge
-    :param spin: Number of unpaired electrons (2S)
+    :param spin: Number of unpaired electrons (2S); ``None`` lets PySCF
+        auto-determine the ground-state multiplicity from the electron count
     :param verbose: PySCF verbosity level
     :return: Built PySCF Mole object
     """
-    atom_lines = []
-    for symbol, pos in zip(
-        atoms.get_chemical_symbols(), atoms.get_positions(), strict=True
-    ):
-        atom_lines.append(f"{symbol}  {pos[0]:.8f}  {pos[1]:.8f}  {pos[2]:.8f}")
-    atom_str = "\n".join(atom_lines)
-    return gto.M(
-        atom=atom_str, basis=basis, charge=charge, spin=spin, verbose=verbose
-    ).build()
+    atom_str = "\n".join(
+        _format_atom_line(symbol, pos)
+        for symbol, pos in zip(
+            atoms.get_chemical_symbols(), atoms.get_positions(), strict=True
+        )
+    )
+    return gto.M(atom=atom_str, basis=basis, charge=charge, spin=spin, verbose=verbose)
 
 
 def pyscf_to_ase(mol: gto.Mole) -> ase.Atoms:
@@ -151,10 +157,7 @@ def pyscf_to_atom_string(mol: gto.Mole) -> str:
     :return: Multi-line string with element symbols and Cartesian coordinates
         (positions in Angstrom)
     """
-    atoms = []
-    for i in range(mol.natm):
-        symbol = mol.atom_symbol(i)
-        coord = mol.atom_coord(i) * BOHR_TO_ANG
-        atoms.append(f"{symbol}  {coord[0]:.8f}  {coord[1]:.8f}  {coord[2]:.8f}")
-
-    return "\n".join(atoms)
+    return "\n".join(
+        _format_atom_line(mol.atom_symbol(i), mol.atom_coord(i) * BOHR_TO_ANG)
+        for i in range(mol.natm)
+    )

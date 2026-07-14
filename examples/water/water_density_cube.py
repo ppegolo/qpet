@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pyscf import dft, gto
 
-from qpet import DMCalculator, MetatomicCalculator, Structure, write_density_cube
+from qpet import DensityModel, DMDensity, write_density_cube
 
 HERE = Path(__file__).parent
 
@@ -33,36 +33,24 @@ WATER = "O 0.0000 0.0000 0.0000; H 0.7575 0.5871 0.0000; H -0.7575 0.5871 0.0000
 # to have been trained on densities computed in the same basis.
 ORBITAL_BASIS = "def2-svp"
 
-# Model-specific configuration. These three values must match the auxiliary
-# basis and output head the model was trained with -- edit them for your model.
+# Model-specific configuration. These values must match the auxiliary basis
+# and output head the model was trained with -- edit them for your model.
 MODEL_FILE = HERE / "pet-scfbench.pt"
 OUTPUT_NAME = "mtt::rho_c_jfit_coulomb"
 BASIS_NAME = "def2-universal-jfit"
 
-# (angular_momentum, atomic_number) -> number of radial channels in the
-# auxiliary (density-fitting) basis; only H and O are needed for water. Values
-# below are for def2-universal-jfit.
-# for a full periodic table and a YAML-driven loader.
-BASIS_DEFINITION: dict[tuple[int, int], int] = {
-    (0, 1): 3, (1, 1): 1, (2, 1): 1,                        # H
-    (0, 8): 6, (1, 8): 4, (2, 8): 3, (3, 8): 1, (4, 8): 1,  # O
-}
-
 
 def density_from_ml() -> None:
     """Predict the density with the metatomic model and write a CUBE file."""
-    calc = MetatomicCalculator(
+    model = DensityModel(
         model=str(MODEL_FILE),
-        output_name=OUTPUT_NAME,
-        basis_name=BASIS_NAME,
-        basis_definition=BASIS_DEFINITION,
-        calc_basis_name=ORBITAL_BASIS,
+        head=OUTPUT_NAME,
+        aux_basis=BASIS_NAME,
     )
-    water = Structure(gto.M(atom=WATER, basis=ORBITAL_BASIS))
-    water.calc = calc
+    rho = model.predict(gto.M(atom=WATER, basis=ORBITAL_BASIS))
 
     out = HERE / "water_density_ml.cube"
-    write_density_cube(water, out)
+    write_density_cube(rho, out)
     print(f"ML density  -> {out.name}")
 
 
@@ -73,17 +61,19 @@ def density_from_dft() -> None:
     mf.xc = "pbe"
     mf.kernel()
 
-    water = Structure(mol)
-    water.calc = DMCalculator(mf.make_rdm1())
+    rho = DMDensity(mol, mf.make_rdm1())
 
     out = HERE / "water_density_dft.cube"
-    write_density_cube(water, out)
+    write_density_cube(rho, out)
     print(f"DFT density -> {out.name}")
 
 
 if __name__ == "__main__":
     if MODEL_FILE.exists():
-        density_from_ml()
+        try:
+            density_from_ml()
+        except Exception as exc:  # e.g. model exported with an older metatomic
+            print(f"Skipping ML inference: could not run {MODEL_FILE.name}: {exc}")
     else:
         print(f"Skipping ML inference: {MODEL_FILE.name} not found in {HERE}.")
     density_from_dft()

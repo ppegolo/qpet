@@ -35,6 +35,7 @@ venv/
 # Jupyter
 .ipynb_checkpoints
 
-# example outputs
-examples/*.cube
-examples/*.pt
+# example outputs (tracked model files like examples/water/pet-scfbench.pt
+# stay tracked; gitignore only hides new untracked files)
+examples/**/*.cube
+examples/**/*.pt

@@ -3,35 +3,45 @@
 Interface [metatomic](https://github.com/metatensor/metatomic) machine-learning
 electron-density models with [PySCF](https://pyscf.org/).
 
-`qpet` predicts resolution-of-identity (RI) density-fitting coefficients from
-a trained metatomic model and turns them into evaluable scalar fields — electron
-density and electrostatic potential — on equal footing. It also reads
-density-matrix and exact-RI representations, and exports any field to a Gaussian
-CUBE file.
+`qpet` predicts resolution-of-identity (RI) electron densities from trained
+metatomic models and evaluates them alongside exact density-matrix references:
+density and electrostatic potential on points, multipoles, CUBE export, and
+SCF initial guesses.
 
 ## What it provides
 
-- **`MetatomicDensityPredictor`** — run a metatomic model, get PySCF-ready RI
-  coefficients (with optional charge and dipole normalization).
-- **Calculators** — `DMCalculator`, `RICalculator`, `MetatomicCalculator`,
-  sharing a common `Calculator` base that exposes `compute_density` and
-  `compute_potential`.
-- **`Structure`** — a light container wrapping a PySCF `Mole`, ASE `Atoms`, or
-  metatomic `System`.
-- **RI observables** — charge, dipole, quadrupole from RI coefficients.
+- **`DensityModel`** — wraps a metatomic model; `predict(mol)` returns an
+  `RIDensity`.
+- **Density value objects** — `RIDensity` (from RI coefficients, with
+  `density`, `potential`, `charge`, `dipole`, `quadrupole`,
+  `normalize_charge`, `constrain_dipole`, `scf_guess`) and `DMDensity`
+  (from an AO density matrix). Each carries its own geometry.
+- **SCF bridge** — `dm_from_auxdensity` builds a one-diagonalization initial
+  guess `dm0` from a predicted density.
 - **CUBE export** — `write_density_cube`, `write_esp_cube`, `write_cube`.
+
+```python
+from qpet import DensityModel
+
+model = DensityModel("model.pt", head="mtt::rho_c_jfit_coulomb",
+                     aux_basis="def2-universal-jfit")
+rho = model.predict(mol).normalize_charge()
+
+rho.potential(points)                  # ESP in a.u., points in Angstrom
+rho.dipole(origin)                     # multipoles from RI coefficients
+rho.scf_guess(mol, xc="pbe")           # dm0 for mf.kernel(dm0=...)
+```
 
 ## Installation
 
 ```bash
-pip install -e .            # core: pyscf, numpy, scipy, ase
-pip install -e ".[metatomic]"   # + torch, metatensor, metatomic, metatrain
+pip install -e .   # pyscf, numpy, scipy, ase, torch, metatensor, metatomic, vesin
 ```
 
 ## Development
 
 ```bash
-tox -e tests     # run the test suite
-tox -e lint      # ruff format check + ruff check + mypy
 tox -e format    # auto-format
+tox -e lint      # ruff format check + ruff check + mypy
+tox -e tests     # run the test suite
 ```

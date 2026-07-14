@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 from pyscf import gto, scf
 
-from qpet import BOHR_TO_ANG, DMCalculator, Structure
-from qpet.calculators.base import _DIST_FLOOR, _nuclear_potential
+from qpet import BOHR_TO_ANG, DMDensity
+from qpet.fields import _DIST_FLOOR, _nuclear_potential
 
 
 @pytest.fixture(scope="module")
@@ -34,12 +34,11 @@ def test_far_field_decay_is_fast(water_dm):
     when doubling r).
     """
     mol, dm = water_dm
-    atoms = Structure(mol)
-    atoms.calc = DMCalculator(dm)
+    rho = DMDensity(mol, dm)
 
     # Sample along +z (dipole direction ≠ 0).
     pts = np.array([[0, 0, r] for r in (5.0, 10.0, 20.0)])
-    v = atoms.compute_potential(pts)
+    v = rho.potential(pts)
 
     assert abs(v[1]) / abs(v[0]) < 0.4, f"|V(10)|/|V(5)| = {abs(v[1]) / abs(v[0]):.3f}"
     assert abs(v[2]) / abs(v[1]) < 0.4, f"|V(20)|/|V(10)| = {abs(v[2]) / abs(v[1]):.3f}"
@@ -56,12 +55,11 @@ def test_bare_nucleus_reproduces_coulomb():
     mol = gto.M(atom="Li 0 0 0", basis="sto-3g", spin=1, verbose=0).build()
     dm = np.zeros((mol.nao, mol.nao))
 
-    atoms = Structure(mol)
-    atoms.calc = DMCalculator(dm)
+    rho = DMDensity(mol, dm)
 
     r1, r2 = 3.0, 6.0  # Angstrom
     pts = np.array([[r1, 0, 0], [r2, 0, 0]])
-    v = atoms.compute_potential(pts)
+    v = rho.potential(pts)
 
     assert v[0] > 0 and v[1] > 0
     # Nuclear-only: V = Z/r exactly. Check V(r1)/V(r2) = r2/r1.
@@ -72,20 +70,19 @@ def test_bare_nucleus_reproduces_coulomb():
 
 def test_dm_matches_pyscf_int1e_grids(water_dm):
     """
-    ``DMCalculator.compute_potential - V_nuc`` is literally
+    ``DMDensity.potential - V_nuc`` is literally
     ``-tr(D · int1e_grids)``. Cross-check both paths agree to machine
     precision.
     """
     mol, dm = water_dm
-    atoms = Structure(mol)
-    atoms.calc = DMCalculator(dm)
+    rho = DMDensity(mol, dm)
 
     rng = np.random.default_rng(42)
     pts_ang = rng.uniform(-5, 5, size=(50, 3))
     pts_bohr = pts_ang / BOHR_TO_ANG
 
-    v_total = atoms.compute_potential(pts_ang)
-    v_nuc = _nuclear_potential(atoms.positions_bohr, atoms.atomic_numbers, pts_bohr)
+    v_total = rho.potential(pts_ang)
+    v_nuc = _nuclear_potential(mol.atom_coords(), rho.atomic_numbers, pts_bohr)
     v_ele_calc = v_nuc - v_total  # recovered electronic contribution
 
     ints = mol.intor("int1e_grids", grids=pts_bohr)
