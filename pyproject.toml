@@ -1,0 +1,104 @@
+[project]
+name = "qpet"
+dynamic = ["version"]
+requires-python = ">=3.12"
+
+readme = "README.md"
+license = "MIT"
+description = "Interface metatomic ML density models with PySCF: density and electrostatic-potential calculators, plus Gaussian CUBE export."
+authors = [{ name = "Paolo Pegolo" }]
+
+dependencies = [
+  "pyscf>=2.0.0",
+  "numpy>=1.20.0",
+  "scipy>=1.7.0",
+  "ase",
+]
+
+keywords = [
+  "machine learning",
+  "quantum chemistry",
+  "electron density",
+  "electrostatics",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.optional-dependencies]
+metatomic = [
+  "torch>=2.0.0",
+  "metatensor-torch>=0.5.0",
+  "metatomic-torch>=0.1.0",
+  "metatrain>=0.1.0",
+]
+
+### ======================================================================== ###
+
+[build-system]
+requires = [
+  "setuptools >= 77",
+  "setuptools_scm>=8",
+  "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+version_file = "src/qpet/_version.py"
+
+# ----------------------------
+# Ruff: formatter + linter
+# ----------------------------
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+# setuptools_scm-generated, gitignored
+extend-exclude = ["src/qpet/_version.py"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "I",   # import sorting
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+]
+ignore = [
+  "E203",  # whitespace before ':', conflicts with some formatters
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+skip-magic-trailing-comma = false
+
+# ----------------------------
+# mypy configuration
+# ----------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+# pyscf / ase ship no type information, so any expression touching them is
+# Any; these two codes are pure untyped-interop noise with no clean fix.
+disable_error_code = [
+  "no-any-return",
+  "no-untyped-call",
+]
+
+# ----------------------------
+# pytest
+# ----------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"
