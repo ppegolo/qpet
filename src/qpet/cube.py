@@ -19,7 +19,7 @@ import numpy as np
 from qpet.conversions import BOHR_TO_ANG
 
 if TYPE_CHECKING:
-    from qpet.structure import Structure
+    from qpet.fields import ScalarField
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def _grid_points_ang(
 
 def write_cube(
     path: str | Path,
-    atoms: Structure,
+    atoms: ScalarField,
     field: np.ndarray,
     origin_bohr: np.ndarray,
     axes_bohr: np.ndarray,
@@ -87,7 +87,7 @@ def write_cube(
     Write a Gaussian-format CUBE file.
 
     :param path: Output file path
-    :param atoms: Molecular structure (provides positions and atomic numbers)
+    :param atoms: Density object (provides positions and atomic numbers)
     :param field: Scalar field on the grid, shape ``(nx, ny, nz)``, atomic units
     :param origin_bohr: Grid origin in Bohr, shape ``(3,)``
     :param axes_bohr: Grid step vectors in Bohr, shape ``(3, 3)`` (rows = axes)
@@ -103,7 +103,7 @@ def write_cube(
     axes_bohr = np.asarray(axes_bohr, dtype=float).reshape(3, 3)
 
     z = atoms.atomic_numbers
-    pos_bohr = atoms.positions_bohr
+    pos_bohr = atoms.positions / BOHR_TO_ANG
     natoms = len(z)
 
     path = Path(path)
@@ -122,10 +122,9 @@ def write_cube(
                 f"{ri[1]:12.6f} {ri[2]:12.6f}\n"
             )
 
-        flat = field.reshape(nx, ny, nz)
         for i in range(nx):
             for j in range(ny):
-                row = flat[i, j]
+                row = field[i, j]
                 for k0 in range(0, nz, 6):
                     chunk = row[k0 : k0 + 6]
                     f.write(" ".join(f"{v:13.5E}" for v in chunk))
@@ -134,21 +133,29 @@ def write_cube(
     logger.info("Wrote CUBE file: %s (%d×%d×%d)", path, nx, ny, nz)
 
 
-def _sample_field(
-    pts_ang: np.ndarray,
-    fn: Callable[[np.ndarray], np.ndarray],
-    batch_size: int,
-) -> np.ndarray:
-    """Evaluate ``fn(pts)`` in batches and concatenate."""
-    out = np.empty(len(pts_ang))
-    for p0 in range(0, len(pts_ang), batch_size):
-        p1 = min(p0 + batch_size, len(pts_ang))
-        out[p0:p1] = fn(pts_ang[p0:p1])
-    return out
+def _write_scalar_cube(
+    atoms: ScalarField,
+    path: str | Path,
+    field_fn: Callable[[np.ndarray], np.ndarray],
+    *,
+    padding: float = 4.0,
+    spacing: float = 0.2,
+    title1: str = "qpet cube",
+    title2: str = "",
+) -> None:
+    """Sample a scalar field on an auto-sized grid and write a CUBE file.
+
+    ``field_fn`` receives the full point array and is expected to batch
+    internally (the compute methods take ``batch_size`` for that).
+    """
+    origin_bohr, axes_bohr, dims = _auto_grid(atoms.positions, padding, spacing)
+    pts_ang = _grid_points_ang(origin_bohr, axes_bohr, dims)
+    field = field_fn(pts_ang).reshape(dims)
+    write_cube(path, atoms, field, origin_bohr, axes_bohr, title1=title1, title2=title2)
 
 
 def write_density_cube(
-    atoms: Structure,
+    atoms: ScalarField,
     path: str | Path,
     *,
     padding: float = 4.0,
@@ -158,31 +165,25 @@ def write_density_cube(
     """
     Write the electron density on an auto-sized grid to a CUBE file.
 
-    :param atoms: Molecular structure with a density-capable calculator
+    :param atoms: Density object supporting ``density`` (RIDensity, DMDensity, ...)
     :param path: Output file path
     :param padding: Padding around the molecule in Angstrom (default 4.0)
     :param spacing: Grid spacing in Angstrom (default 0.2)
     :param batch_size: Points evaluated per batch (controls peak memory)
     """
-    origin_bohr, axes_bohr, dims = _auto_grid(atoms.positions, padding, spacing)
-    pts_ang = _grid_points_ang(origin_bohr, axes_bohr, dims)
-    rho = _sample_field(
-        pts_ang, lambda p: atoms.compute_density(p, batch_size=batch_size), batch_size
-    )
-    field = rho.reshape(dims)
-    write_cube(
-        path,
+    _write_scalar_cube(
         atoms,
-        field,
-        origin_bohr,
-        axes_bohr,
+        path,
+        lambda p: atoms.density(p, batch_size=batch_size),
+        padding=padding,
+        spacing=spacing,
         title1="qpet electron density",
         title2="rho(r) in electrons / Bohr^3",
     )
 
 
 def write_esp_cube(
-    atoms: Structure,
+    atoms: ScalarField,
     path: str | Path,
     *,
     padding: float = 4.0,
@@ -192,22 +193,18 @@ def write_esp_cube(
     """
     Write the electrostatic potential on an auto-sized grid to a CUBE file.
 
-    :param atoms: Molecular structure with any attached ESP calculator
+    :param atoms: Density object supporting ``potential`` (RIDensity, DMDensity, ...)
     :param path: Output file path
     :param padding: Padding around the molecule in Angstrom (default 4.0)
     :param spacing: Grid spacing in Angstrom (default 0.2)
     :param batch_size: Points evaluated per batch (controls peak memory)
     """
-    origin_bohr, axes_bohr, dims = _auto_grid(atoms.positions, padding, spacing)
-    pts_ang = _grid_points_ang(origin_bohr, axes_bohr, dims)
-    v = _sample_field(pts_ang, atoms.compute_potential, batch_size)
-    field = v.reshape(dims)
-    write_cube(
-        path,
+    _write_scalar_cube(
         atoms,
-        field,
-        origin_bohr,
-        axes_bohr,
+        path,
+        lambda p: atoms.potential(p, batch_size=batch_size),
+        padding=padding,
+        spacing=spacing,
         title1="qpet electrostatic potential",
         title2="V(r) in atomic units (Hartree / e)",
     )

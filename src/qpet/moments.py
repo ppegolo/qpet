@@ -1,8 +1,13 @@
-"""RI density observables via the Ghost Trick.
+"""RI-density observables and coefficient corrections.
 
-Extracts electronic multipoles (charge, dipole) from RI fitting coefficients
-using a near-flat Gaussian ghost orbital as a proxy for constant/linear basis
-functions.  See DENSITY_ROADMAP.md §Implementation Reference for derivation.
+Multipoles (charge, dipole, quadrupole) are extracted with the Ghost Trick:
+cross integrals against a near-flat Gaussian ghost orbital, rescaled by its
+normalization, converge to the analytic moment integrals
+``∫ r^k χ_i(r) dr`` as the ghost exponent goes to zero.
+
+The analytic S vector (``∫ χ_i dr``, l=0 shells only) provides the same k=0
+integral in closed form and drives the minimum-norm charge normalization;
+a test pins the two implementations against each other.
 """
 
 from __future__ import annotations
@@ -14,18 +19,22 @@ from pyscf import gto
 # Ghost Atom Configuration
 _GHOST_ALPHA = 1e-12
 _NORM_FACTOR = 1.0 / (2 * _GHOST_ALPHA / np.pi) ** 0.75
+_DEFAULT_GHOST: gto.Mole | None = None
 
 
 def _get_or_create_ghost(ghost: gto.Mole | None) -> gto.Mole:
-    """Creates a default ghost atom at the global origin if not provided."""
+    """Returns the provided ghost Mole, or the module-level cached default."""
+    global _DEFAULT_GHOST
     if ghost is not None:
         return ghost
-    return gto.M(
-        atom=[("X", (0.0, 0.0, 0.0))],
-        basis={"X": [[0, [_GHOST_ALPHA, 1.0]]]},
-        spin=0,
-        charge=0,
-    )
+    if _DEFAULT_GHOST is None:
+        _DEFAULT_GHOST = gto.M(
+            atom=[("X", (0.0, 0.0, 0.0))],
+            basis={"X": [[0, [_GHOST_ALPHA, 1.0]]]},
+            spin=0,
+            charge=0,
+        )
+    return _DEFAULT_GHOST
 
 
 def get_ri_charge(
@@ -38,9 +47,8 @@ def get_ri_charge(
     """
     Returns the electronic charge (-N_elec) as a 0D numpy array.
 
-    :param auxmol: PySCF auxiliary Mole returned by :class:`MetatomicDensityPredictor`
+    :param auxmol: PySCF auxiliary Mole from a DensityCalculator or RICalculator
     :param ri_coeffs: RI fitting coefficients, shape ``(naux,)``
-    :param origin: Expansion origin in **Bohr** (ignored for charge)
     :param ghost: Optional pre-configured ghost molecule; if None, a default flat
         Gaussian at the global origin is used.
     :param include_nuclear: If True, the total charge (nuclear + electronic) is
@@ -68,7 +76,7 @@ def get_ri_dipole(
     """
     Returns the electronic dipole moment shifted to the target origin.
 
-    :param auxmol: PySCF auxiliary Mole returned by :class:`MetatomicDensityPredictor`
+    :param auxmol: PySCF auxiliary Mole from a DensityCalculator or RICalculator
     :param ri_coeffs: RI fitting coefficients, shape ``(naux,)``
     :param origin: Expansion origin in **Bohr**.  For origin-independent dipoles use the
         ligand centre of mass or centre of nuclear charge.
@@ -142,9 +150,12 @@ def apply_dipole_correction(
     coef = (D @ Jinv_S) / (S @ Jinv_S)  # (3,)
     Jinv_Dperp = Jinv_D - np.outer(Jinv_S, coef)  # J^{-1} D_perp^T, shape (nao, 3)
 
-    # Minimum J-norm correction: δc = J^{-1} D_perp^T λ, where G λ = -Δμ
+    # Minimum J-norm correction: δc = J^{-1} D_perp^T λ, where G λ = -Δμ.
+    # lstsq handles rank-deficient G — e.g. a linear molecule on an axis where
+    # D_perp spans fewer than 3 dipole directions — returning the minimum-norm
+    # solution and silently dropping the unachievable component.
     G = D @ Jinv_Dperp  # (3, 3) Coulomb-metric Gram matrix
-    lam = np.linalg.solve(G, -delta_mu_bohr)
+    lam, *_ = np.linalg.lstsq(G, -delta_mu_bohr, rcond=None)
     delta_c = Jinv_Dperp @ lam
 
     return ri_coeffs + delta_c
@@ -163,7 +174,7 @@ def get_ri_quadrupole(
     The quadrupole is returned in its primitive form (without traceless correction)
     to preserve the simple translation properties.
 
-    :param auxmol: PySCF auxiliary Mole returned by :class:`MetatomicDensityPredictor`
+    :param auxmol: PySCF auxiliary Mole from a DensityCalculator or RICalculator
     :param ri_coeffs: RI fitting coefficients, shape ``(naux,)``
     :param origin: Expansion origin in **Bohr**.  For origin-independent dipoles use the
         ligand centre of mass or centre of nuclear charge.
@@ -211,3 +222,51 @@ def get_ri_quadrupole(
         return Q_elec + Q_nuc_A
 
     return Q_elec
+
+
+def compute_S_vector(auxmol: gto.Mole) -> np.ndarray:
+    r"""
+    Analytical integral ``\int \chi_i(r) d^3r`` for every aux basis function.
+
+    Only l=0 shells contribute; entries for l>0 shells are zero.
+
+    :param auxmol: PySCF auxiliary Mole object.
+    :return: S vector of shape (nao,), float64.
+    """
+    S_vec = np.zeros(auxmol.nao)
+    ao_loc = auxmol.ao_loc_nr()
+
+    for ib in range(auxmol.nbas):
+        if auxmol.bas_angular(ib) != 0:
+            continue
+
+        exps = auxmol.bas_exp(ib)
+        coeffs = auxmol._libcint_ctr_coeff(ib)
+        start_ao = ao_loc[ib]
+        nctr = coeffs.shape[1]
+
+        for i_ctr in range(nctr):
+            c_k = coeffs[:, i_ctr]
+            prim_integrals = (np.pi / exps) ** 1.5 / np.sqrt(4 * np.pi)
+            S_vec[start_ao + i_ctr] = np.sum(c_k * prim_integrals)
+
+    return S_vec
+
+
+def normalize_charge_additive(
+    auxmol: gto.Mole, coeffs: np.ndarray, n_electrons: float
+) -> np.ndarray:
+    """
+    Shift s-function coefficients so the density integrates to ``n_electrons``.
+
+    Minimum-norm additive correction along the S vector (``∫χ_i dr``): unlike
+    a multiplicative rescale it leaves the l>0 (shape) channels untouched.
+
+    :param auxmol: PySCF auxiliary Mole object.
+    :param coeffs: RI coefficients, shape (naux,). Not modified.
+    :param n_electrons: Target electron count.
+    :return: Corrected coefficients, shape (naux,).
+    """
+    S_vec = compute_S_vector(auxmol)
+    gamma = (n_electrons - S_vec @ coeffs) / (S_vec @ S_vec)
+    return coeffs + gamma * S_vec

@@ -1,14 +1,10 @@
 """qpet: interface metatomic ML density models with PySCF.
 
-Predicts RI density-fitting coefficients from metatomic models and evaluates
-electron density and electrostatic potential from them, on equal footing.
-
-The metatomic-backed predictor requires the ``metatomic`` optional dependencies
-(``pip install qpet[metatomic]``); the rest of the package works with the
-core dependencies alone.
+Predicts RI electron densities with metatomic models and evaluates them —
+density, electrostatic potential, multipoles, CUBE export, SCF initial
+guesses — alongside exact density-matrix references, on equal footing.
 """
 
-from .calculators import Calculator, DMCalculator, MetatomicCalculator, RICalculator
 from .conversions import (
     BOHR_TO_ANG,
     ase_to_pyscf,
@@ -19,8 +15,17 @@ from .conversions import (
     system_to_pyscf,
 )
 from .cube import write_cube, write_density_cube, write_esp_cube
-from .observables import get_ri_charge, get_ri_dipole, get_ri_quadrupole
-from .structure import Structure
+from .fields import DMDensity, RIDensity, ScalarField
+from .model import DensityModel
+from .moments import (
+    apply_dipole_correction,
+    compute_S_vector,
+    get_ri_charge,
+    get_ri_dipole,
+    get_ri_quadrupole,
+    normalize_charge_additive,
+)
+from .scf import dm_from_auxdensity
 
 try:
     from ._version import __version__
@@ -29,11 +34,20 @@ except ImportError:  # pragma: no cover - _version.py is generated at build time
 
 __all__ = [
     "__version__",
-    "Structure",
-    "Calculator",
-    "DMCalculator",
-    "RICalculator",
-    "MetatomicCalculator",
+    "RIDensity",
+    "DMDensity",
+    "ScalarField",
+    "DensityModel",
+    "dm_from_auxdensity",
+    "get_ri_charge",
+    "get_ri_dipole",
+    "get_ri_quadrupole",
+    "apply_dipole_correction",
+    "compute_S_vector",
+    "normalize_charge_additive",
+    "write_cube",
+    "write_density_cube",
+    "write_esp_cube",
     "BOHR_TO_ANG",
     "ase_to_pyscf",
     "pyscf_to_ase",
@@ -41,19 +55,4 @@ __all__ = [
     "pyscf_to_system",
     "system_to_atom_string",
     "system_to_pyscf",
-    "get_ri_charge",
-    "get_ri_dipole",
-    "get_ri_quadrupole",
-    "write_cube",
-    "write_density_cube",
-    "write_esp_cube",
 ]
-
-# The metatomic density predictor pulls in torch and is only importable with the
-# ``[metatomic]`` extra installed.
-try:
-    from .predictor import MetatomicDensityOutput, MetatomicDensityPredictor
-
-    __all__ += ["MetatomicDensityPredictor", "MetatomicDensityOutput"]
-except ImportError:  # pragma: no cover - exercised only without the extra
-    pass

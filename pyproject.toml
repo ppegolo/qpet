@@ -10,9 +10,9 @@ authors = [{ name = "Paolo Pegolo" }]
 
 dependencies = [
   "pyscf>=2.0.0",
-  "numpy>=1.20.0",
-  "scipy>=1.7.0",
   "ase",
+  "torch>=2.0.0",
+  "metatomic-torch>=0.1.15",
 ]
 
 keywords = [
@@ -30,14 +30,6 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Chemistry",
   "Topic :: Scientific/Engineering :: Physics",
-]
-
-[project.optional-dependencies]
-metatomic = [
-  "torch>=2.0.0",
-  "metatensor-torch>=0.5.0",
-  "metatomic-torch>=0.1.0",
-  "metatrain>=0.1.0",
 ]
 
 ### ======================================================================== ###
