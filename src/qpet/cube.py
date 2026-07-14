@@ -1,16 +1,23 @@
 """
-Gaussian CUBE file export for volumetric scalar fields.
+Gaussian CUBE file import/export and integration grids.
 
-Writes electron density and electrostatic potential on a regular grid in a
-format that ChimeraX, PyMOL, and VMD load directly. All grid geometry is
-written in Bohr (positive grid counts) and field values in atomic units, the
-canonical CUBE convention.
+Writes (and reads back) electron density and electrostatic potential on a
+regular grid in a format that ChimeraX, PyMOL, and VMD load directly. All
+grid geometry is in Bohr (positive grid counts) and field values in atomic
+units, the canonical CUBE convention.
+
+:func:`becke_grid` exposes PySCF's molecular quadrature so arbitrary density
+functionals can be integrated in one line::
+
+    grid = becke_grid(mol)
+    n_elec = (grid.weights * rho.density(grid.points)).sum()
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,9 +26,105 @@ import numpy as np
 from qpet.conversions import BOHR_TO_ANG
 
 if TYPE_CHECKING:
+    from pyscf import gto
+
     from qpet.fields import ScalarField
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class BeckeGrid:
+    """Molecular integration grid: ``∫ f dr ≈ Σ weights · f(points)``."""
+
+    points: np.ndarray
+    """Grid points in Angstrom, shape (N, 3)."""
+    weights: np.ndarray
+    """Quadrature weights in Bohr^3, shape (N,)."""
+
+
+def becke_grid(mol: gto.Mole, level: int = 3) -> BeckeGrid:
+    """
+    Build a Becke molecular quadrature grid for integrating scalar fields.
+
+    :param mol: Built PySCF ``Mole``.
+    :param level: PySCF grid level (higher = denser; default 3).
+    :return: :class:`BeckeGrid` with points in Angstrom and weights in Bohr^3.
+    """
+    from pyscf import dft
+
+    grids = dft.Grids(mol)
+    grids.level = level
+    grids.build()
+    return BeckeGrid(points=grids.coords * BOHR_TO_ANG, weights=grids.weights)
+
+
+@dataclass(frozen=True)
+class CubeData:
+    """Parsed contents of a Gaussian CUBE file (geometry in Bohr)."""
+
+    title1: str
+    title2: str
+    origin_bohr: np.ndarray
+    """Grid origin in Bohr, shape (3,)."""
+    axes_bohr: np.ndarray
+    """Grid step vectors in Bohr, shape (3, 3), rows = axes."""
+    dims: tuple[int, int, int]
+    atomic_numbers: np.ndarray
+    positions_bohr: np.ndarray
+    field: np.ndarray
+    """Scalar field on the grid, shape ``dims``, atomic units."""
+
+    def points(self) -> np.ndarray:
+        """Grid point coordinates in Angstrom, shape ``(nx*ny*nz, 3)``."""
+        return _grid_points_ang(self.origin_bohr, self.axes_bohr, self.dims)
+
+
+def read_cube(path: str | Path) -> CubeData:
+    """
+    Read a Gaussian-format CUBE file.
+
+    :param path: Input file path.
+    :return: :class:`CubeData` with geometry in Bohr and the field reshaped
+        to its grid dimensions.
+    """
+    with open(path) as f:
+        lines = f.read().splitlines()
+
+    title1 = lines[0]
+    title2 = lines[1]
+    parts = lines[2].split()
+    natoms = int(parts[0])
+    origin = np.array([float(x) for x in parts[1:4]])
+
+    axes = np.zeros((3, 3))
+    dims = []
+    for i in range(3):
+        p = lines[3 + i].split()
+        dims.append(int(p[0]))
+        axes[i] = [float(x) for x in p[1:4]]
+
+    z = []
+    pos = []
+    for i in range(natoms):
+        p = lines[6 + i].split()
+        z.append(int(p[0]))
+        pos.append([float(p[2]), float(p[3]), float(p[4])])
+
+    data_tokens: list[float] = []
+    for line in lines[6 + natoms :]:
+        data_tokens.extend(float(x) for x in line.split())
+
+    return CubeData(
+        title1=title1,
+        title2=title2,
+        origin_bohr=origin,
+        axes_bohr=axes,
+        dims=(dims[0], dims[1], dims[2]),
+        atomic_numbers=np.array(z),
+        positions_bohr=np.array(pos),
+        field=np.array(data_tokens).reshape(dims),
+    )
 
 
 def _auto_grid(
