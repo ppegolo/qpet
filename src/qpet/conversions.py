@@ -70,6 +70,7 @@ def system_to_pyscf(
     charge: int = 0,
     spin: int | None = None,
     verbose: int = 0,
+    ecp: str | None = None,
 ) -> gto.Mole:
     """
     Convert a metatomic System to a PySCF Mole object.
@@ -80,10 +81,21 @@ def system_to_pyscf(
     :param spin: Number of unpaired electrons (2S); ``None`` lets PySCF
         auto-determine the ground-state multiplicity from the electron count
     :param verbose: PySCF verbosity level
+    :param ecp: Effective core potential name. Required for elements whose
+        basis is defined against an ECP (def2 for I and other heavy p-block):
+        without it ``mol.nelectron`` counts all Z electrons instead of Z_eff,
+        so anything keyed on the electron count is wrong.
     :return: Built PySCF Mole object
     """
     atom_str = system_to_atom_string(system)
-    return gto.M(atom=atom_str, basis=basis, charge=charge, spin=spin, verbose=verbose)
+    return gto.M(
+        atom=atom_str,
+        basis=basis,
+        charge=charge,
+        spin=spin,
+        verbose=verbose,
+        ecp=ecp,
+    )
 
 
 def _format_atom_line(symbol: str, pos: np.ndarray) -> str:
