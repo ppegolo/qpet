@@ -141,7 +141,13 @@ class DensityModel:
     :param device: Torch device (default ``"cpu"``).
     :param dtype: Torch dtype (default ``torch.float32``).
     :param normalize_charge: If True, shift s-channel coefficients so each
-        predicted density integrates to the exact electron count.
+        predicted density integrates to the exact electron count. With
+        :meth:`predict_systems` this needs ``ecp`` set for ECP elements,
+        otherwise the target count is Z rather than Z_eff.
+    :param ecp: Effective core potential name used to build molecules in
+        :meth:`predict_systems`; unused by :meth:`predict`, which takes the
+        caller's ``Mole`` as-is. Set it whenever ``basis`` implies an ECP
+        (def2 for I and other heavy p-block).
     :param constrain_dipole: If True, apply a charge-neutral correction so
         the electric dipole matches the model-predicted value.
     :param dipole_head: Name of the dipole output in the model (only used
@@ -172,6 +178,7 @@ class DensityModel:
         normalize_charge: bool = False,
         constrain_dipole: bool = False,
         dipole_head: str = "mtt::electric_dipole",
+        ecp: str | None = None,
     ) -> None:
         import torch
 
@@ -185,6 +192,7 @@ class DensityModel:
 
         self.aux_basis = aux_basis
         self.basis = basis
+        self.ecp = ecp
         self.normalize_charge = normalize_charge
         self.constrain_dipole = constrain_dipole
         self.dipole_head = dipole_head
@@ -281,7 +289,9 @@ class DensityModel:
         if not isinstance(systems, list):
             systems = [systems]
         mols = [
-            system_to_pyscf(system, basis=self.basis, charge=charge, spin=spin)
+            system_to_pyscf(
+                system, basis=self.basis, charge=charge, spin=spin, ecp=self.ecp
+            )
             for system in systems
         ]
         return self._predict(systems, mols)
