@@ -8,6 +8,7 @@ guesses — alongside exact density-matrix references, on equal footing.
 from .conversions import (
     BOHR_TO_ANG,
     ase_to_pyscf,
+    attach_conditioning,
     pyscf_to_ase,
     pyscf_to_atom_string,
     pyscf_to_system,
@@ -61,6 +62,7 @@ __all__ = [
     "becke_grid",
     "BeckeGrid",
     "BOHR_TO_ANG",
+    "attach_conditioning",
     "ase_to_pyscf",
     "pyscf_to_ase",
     "pyscf_to_atom_string",
