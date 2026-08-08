@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 from pyscf import df, gto
 
-from qpet.conversions import pyscf_to_system, system_to_pyscf
+from qpet.conversions import attach_conditioning, pyscf_to_system, system_to_pyscf
 from qpet.fields import RIDensity
 from qpet.moments import (
     apply_dipole_correction,
@@ -294,6 +294,11 @@ class DensityModel:
             )
             for system in systems
         ]
+        # A charge-conditioned model reads these off the System, so the caller's
+        # `charge`/`spin` have to travel with it and not only with the Mole.
+        # Data the caller already attached wins.
+        for system, mol in zip(systems, mols, strict=True):
+            attach_conditioning(system, mol.charge, mol.spin + 1)
         return self._predict(systems, mols)
 
     # ------------------------------------------------------------------ #
