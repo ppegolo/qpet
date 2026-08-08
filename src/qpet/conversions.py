@@ -12,10 +12,12 @@ from pyscf.lib.parameters import BOHR as BOHR_TO_ANG
 if TYPE_CHECKING:
     import ase
     import torch
+    from metatensor.torch import TensorMap
     from metatomic.torch import System
 
 __all__ = [
     "BOHR_TO_ANG",
+    "attach_conditioning",
     "pyscf_to_system",
     "system_to_pyscf",
     "system_to_atom_string",
@@ -25,6 +27,78 @@ __all__ = [
 ]
 
 
+def attach_conditioning(
+    system: System,
+    charge: float,
+    spin_multiplicity: float = 1.0,
+    *,
+    overwrite: bool = False,
+) -> System:
+    """
+    Attach the charge and spin multiplicity a model conditions on to a System.
+
+    Charge- and spin-conditioned models read these two per-system scalars with
+    ``system.get_data(...)``; a System without them makes the model fall back to
+    its own defaults, which are a neutral singlet. Predicting a charged species
+    from a bare System is therefore silently wrong, so every entry point that
+    builds a System attaches them.
+
+    The layout is the one metatrain writes and reads (see
+    ``metatrain.utils.system_data.get_system_data_transform``): a single block
+    under ``Labels.single()`` keys, one ``"system"`` sample, no components, and
+    one property named after the field.
+
+    :param system: System to annotate, modified in place.
+    :param charge: Total molecular charge.
+    :param spin_multiplicity: Spin multiplicity 2S+1 (default 1, a singlet).
+    :param overwrite: Replace values already present instead of keeping them.
+        Without it, data the caller attached wins.
+    :return: The same System, for chaining.
+    """
+    known = set(system.known_data())
+    for name, value in (
+        ("charge", charge),
+        ("spin_multiplicity", spin_multiplicity),
+    ):
+        if name in known and not overwrite:
+            continue
+        system.add_data(
+            name,
+            _per_system_scalar(
+                value,
+                name,
+                dtype=system.positions.dtype,
+                device=system.positions.device,
+            ),
+            override=overwrite,
+        )
+    return system
+
+
+def _per_system_scalar(
+    value: float, name: str, dtype: torch.dtype | None, device: torch.device | None
+) -> TensorMap:
+    """A one-value per-system TensorMap, in the shape metatrain expects."""
+    import torch
+    from metatensor.torch import Labels, TensorBlock, TensorMap
+
+    return TensorMap(
+        Labels.single().to(device=device),
+        [
+            TensorBlock(
+                values=torch.tensor([[float(value)]], dtype=dtype, device=device),
+                samples=Labels(
+                    "system", torch.zeros((1, 1), dtype=torch.int32, device=device)
+                ),
+                components=[],
+                properties=Labels(
+                    name, torch.zeros((1, 1), dtype=torch.int32, device=device)
+                ),
+            )
+        ],
+    )
+
+
 def pyscf_to_system(
     mol: gto.Mole,
     dtype: torch.dtype | None = None,
@@ -32,6 +106,10 @@ def pyscf_to_system(
 ) -> System:
     """
     Convert a PySCF Mole object to a metatomic System.
+
+    The molecule's charge and spin multiplicity travel with the System, so a
+    charge-conditioned model sees the species the caller asked for rather than
+    a neutral singlet.
 
     :param mol: PySCF Mole object (built)
     :param dtype: Torch dtype for positions (defaults to ``torch.float32``)
@@ -56,12 +134,14 @@ def pyscf_to_system(
     )
     cell = torch.zeros((3, 3), dtype=dtype, device=device)
 
-    return System(
+    system = System(
         types=atom_types,
         positions=positions,
         cell=cell,
         pbc=torch.tensor([False, False, False]).to(device=device),
     )
+    # mol.spin is 2S = n_alpha - n_beta, so the multiplicity is mol.spin + 1.
+    return attach_conditioning(system, mol.charge, mol.spin + 1)
 
 
 def system_to_pyscf(
