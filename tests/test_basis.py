@@ -72,11 +72,31 @@ def test_etb_basis_follows_the_spec_not_the_molecule():
     assert beta_sensitive.nao != aux_a.nao
 
 
-def test_ri_fit_in_etb_basis_integrates_to_electron_count(water):
-    """End-to-end: an ETB-fitted RI density carries the right electron count."""
+@pytest.fixture(scope="module")
+def water_etb(water):
+    """Water RHF density, Coulomb-metric RI-fitted onto an ETB auxiliary basis."""
     dm = scf.RHF(water).run(verbose=0).make_rdm1()
-    rho = RIDensity.from_dm(water, dm, "etb:def2-svp:2.0")
+    return RIDensity.from_dm(water, dm, "etb:def2-svp:2.0")
 
+
+def test_ri_fit_in_etb_basis_integrates_to_electron_count(water, water_etb):
+    """End-to-end: an ETB-fitted RI density carries the right electron count."""
     grid = becke_grid(water, level=3)
-    n_elec = float(np.sum(grid.weights * rho.density(grid.points)))
+    n_elec = float(np.sum(grid.weights * water_etb.density(grid.points)))
     assert abs(n_elec - water.nelectron) < 0.05
+
+
+def test_select_atoms_on_an_etb_density(water_etb):
+    """
+    ``select_atoms`` rebuilds a sub-``Mole`` from ``auxmol.basis``, which an ETB
+    spec makes a dictionary rather than a name; the partition must stay exact
+    and additive, as it is for a named basis.
+    """
+    oxygen = water_etb.select_atoms([0])
+    hydrogens = water_etb.select_atoms([1, 2])
+    assert oxygen.auxmol.nao + hydrogens.auxmol.nao == water_etb.auxmol.nao
+
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(-4.0, 4.0, size=(50, 3))
+    parts = oxygen.potential(pts) + hydrogens.potential(pts)
+    assert np.max(np.abs(parts - water_etb.potential(pts))) < 1e-12
