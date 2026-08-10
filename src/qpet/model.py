@@ -11,8 +11,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
-from pyscf import df, gto
+from pyscf import gto
 
+from qpet.basis import make_auxmol
 from qpet.conversions import attach_conditioning, pyscf_to_system, system_to_pyscf
 from qpet.fields import RIDensity
 from qpet.moments import (
@@ -133,8 +134,10 @@ class DensityModel:
         ``dict`` of pre-evaluated TensorMaps from a previous forward pass.
     :param head: Name of the density head in the model output
         (e.g. ``"mtt::rho_c_jfit_coulomb"``).
-    :param aux_basis: Auxiliary basis set name the model was trained on
-        (e.g. ``"def2-universal-jfit"``).
+    :param aux_basis: Auxiliary basis the model was trained on: a PySCF basis
+        set name (e.g. ``"def2-universal-jfit"``) or an even-tempered
+        specification ``"etb:<ao_basis>:<beta>"`` (e.g. ``"etb:def2-svp:2.0"``),
+        where ``ao_basis`` is the *orbital* basis the ETB was generated from.
     :param basis: Orbital basis used to build a ``Mole`` in
         :meth:`predict_systems`; unused by :meth:`predict`, which takes the
         caller's ``Mole`` as-is.
@@ -307,7 +310,7 @@ class DensityModel:
 
     def _predict(self, systems: list[System], mols: list[gto.Mole]) -> list[RIDensity]:
         """Shared prediction path: forward pass, conversion, corrections."""
-        auxmols = [df.addons.make_auxmol(mol, self.aux_basis) for mol in mols]
+        auxmols = [make_auxmol(mol, self.aux_basis) for mol in mols]
         outputs = self._evaluate(systems)
         coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
 

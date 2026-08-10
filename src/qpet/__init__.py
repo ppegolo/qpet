@@ -5,6 +5,7 @@ density, electrostatic potential, multipoles, CUBE export, SCF initial
 guesses — alongside exact density-matrix references, on equal footing.
 """
 
+from .basis import make_auxmol, resolve_aux_basis
 from .conversions import (
     BOHR_TO_ANG,
     ase_to_pyscf,
@@ -62,6 +63,8 @@ __all__ = [
     "becke_grid",
     "BeckeGrid",
     "BOHR_TO_ANG",
+    "make_auxmol",
+    "resolve_aux_basis",
     "attach_conditioning",
     "ase_to_pyscf",
     "pyscf_to_ase",
