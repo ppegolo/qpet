@@ -19,11 +19,13 @@ from .conversions import (
 from .cube import (
     BeckeGrid,
     CubeData,
+    CubeGrid,
     becke_grid,
     read_cube,
     write_cube,
     write_density_cube,
     write_esp_cube,
+    write_esp_error_cube,
 )
 from .fields import DMDensity, RIDensity, ScalarField
 from .model import DensityModel
@@ -58,8 +60,10 @@ __all__ = [
     "write_cube",
     "write_density_cube",
     "write_esp_cube",
+    "write_esp_error_cube",
     "read_cube",
     "CubeData",
+    "CubeGrid",
     "becke_grid",
     "BeckeGrid",
     "BOHR_TO_ANG",
