@@ -23,6 +23,7 @@ from typing import Protocol
 import numpy as np
 from pyscf import df, gto
 
+from qpet.basis import make_auxmol
 from qpet.conversions import BOHR_TO_ANG
 
 # Clamp distance to avoid singularity at nuclei (Bohr).
@@ -212,10 +213,11 @@ class RIDensity:
         :param mol: Built PySCF ``Mole`` (orbital basis).
         :param dm: Density matrix in AO basis, shape (nao, nao).
         :param aux_basis: Auxiliary basis set name
-            (e.g. ``"def2-universal-jfit"``).
+            (e.g. ``"def2-universal-jfit"``) or an even-tempered specification
+            ``"etb:<ao_basis>:<beta>"`` (e.g. ``"etb:def2-svp:2.0"``).
         :return: Fitted :class:`RIDensity`.
         """
-        auxmol = df.addons.make_auxmol(mol, aux_basis)
+        auxmol = make_auxmol(mol, aux_basis)
         j2c = auxmol.intor("int2c2e")
         j3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")
         coeffs = np.linalg.solve(j2c, np.einsum("ijP,ij->P", j3c, dm))
