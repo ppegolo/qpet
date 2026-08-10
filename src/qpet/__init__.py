@@ -6,10 +6,12 @@ guesses — alongside exact density-matrix references, on equal footing.
 """
 
 from .basis import make_auxmol, resolve_aux_basis
+from .conditioning import check_spin, spin_from_parity
 from .conversions import (
     BOHR_TO_ANG,
     ase_to_pyscf,
     attach_conditioning,
+    build_mole,
     pyscf_to_ase,
     pyscf_to_atom_string,
     pyscf_to_system,
@@ -27,6 +29,7 @@ from .cube import (
     write_esp_cube,
     write_esp_error_cube,
 )
+from .esp import esp_error, esp_on_surface, export_esp_maps
 from .fields import DMDensity, RIDensity, ScalarField
 from .model import DensityModel
 from .moments import (
@@ -38,6 +41,7 @@ from .moments import (
     normalize_charge_additive,
 )
 from .scf import dm_from_auxdensity
+from .surfaces import SurfacePatch, get_vdw, solvent_accessible_surface
 
 try:
     from ._version import __version__
@@ -51,6 +55,14 @@ __all__ = [
     "ScalarField",
     "DensityModel",
     "dm_from_auxdensity",
+    "SurfacePatch",
+    "get_vdw",
+    "solvent_accessible_surface",
+    "esp_on_surface",
+    "esp_error",
+    "export_esp_maps",
+    "spin_from_parity",
+    "check_spin",
     "get_ri_charge",
     "get_ri_dipole",
     "get_ri_quadrupole",
@@ -70,6 +82,7 @@ __all__ = [
     "make_auxmol",
     "resolve_aux_basis",
     "attach_conditioning",
+    "build_mole",
     "ase_to_pyscf",
     "pyscf_to_ase",
     "pyscf_to_atom_string",
