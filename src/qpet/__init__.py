@@ -40,6 +40,12 @@ from .moments import (
     get_ri_quadrupole,
     normalize_charge_additive,
 )
+from .provenance import (
+    Fingerprint,
+    file_fingerprint,
+    model_provenance,
+    provenance_columns,
+)
 from .scf import dm_from_auxdensity
 from .surfaces import SurfacePatch, get_vdw, solvent_accessible_surface
 
@@ -69,6 +75,10 @@ __all__ = [
     "apply_dipole_correction",
     "compute_S_vector",
     "normalize_charge_additive",
+    "Fingerprint",
+    "file_fingerprint",
+    "model_provenance",
+    "provenance_columns",
     "write_cube",
     "write_density_cube",
     "write_esp_cube",
