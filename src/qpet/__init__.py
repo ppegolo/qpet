@@ -29,7 +29,6 @@ from .cube import (
     write_esp_cube,
     write_esp_error_cube,
 )
-from .esp import esp_error, esp_on_surface, export_esp_maps
 from .fields import DMDensity, RIDensity, ScalarField
 from .model import DensityModel
 from .moments import (
@@ -47,7 +46,6 @@ from .provenance import (
     provenance_columns,
 )
 from .scf import dm_from_auxdensity
-from .surfaces import SurfacePatch, get_vdw, solvent_accessible_surface
 
 try:
     from ._version import __version__
@@ -61,12 +59,6 @@ __all__ = [
     "ScalarField",
     "DensityModel",
     "dm_from_auxdensity",
-    "SurfacePatch",
-    "get_vdw",
-    "solvent_accessible_surface",
-    "esp_on_surface",
-    "esp_error",
-    "export_esp_maps",
     "spin_from_parity",
     "check_spin",
     "get_ri_charge",
