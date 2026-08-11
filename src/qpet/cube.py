@@ -176,6 +176,77 @@ def _grid_points_ang(
     return pts_bohr * BOHR_TO_ANG
 
 
+@dataclass(frozen=True)
+class CubeGrid:
+    """A regular grid, shared by every field that must be compared on it.
+
+    The point of making the grid an object is that ChimeraX and PyMOL can only
+    colour one map by another when the two sit on *identical* grids. Building a
+    grid from one geometry and then sampling several fields on it — a ligand
+    density, the receptor's potential, a predicted-minus-reference difference —
+    is what makes those files loadable together.
+    """
+
+    origin_bohr: np.ndarray
+    """Grid origin in Bohr, shape (3,)."""
+    axes_bohr: np.ndarray
+    """Grid step vectors in Bohr, shape (3, 3), rows = axes."""
+    dims: tuple[int, int, int]
+    """Point counts along each axis."""
+
+    @classmethod
+    def enclosing(
+        cls,
+        positions_ang: np.ndarray,
+        *,
+        padding: float = 4.0,
+        spacing: float = 0.2,
+    ) -> CubeGrid:
+        """
+        Build an orthogonal grid enclosing ``positions_ang`` with uniform spacing.
+
+        The positions need not be the atoms of the field later sampled on it: to
+        look at a ligand inside a large complex, enclose the ligand and sample
+        the complex's field, which keeps the grid small.
+
+        :param positions_ang: Positions to enclose, in Angstrom, shape (N, 3).
+        :param padding: Padding added on every side, in Angstrom.
+        :param spacing: Grid spacing in Angstrom, the same on all axes.
+        """
+        origin, axes, dims = _auto_grid(
+            np.asarray(positions_ang, dtype=float), padding, spacing
+        )
+        return cls(origin_bohr=origin, axes_bohr=axes, dims=dims)
+
+    @property
+    def n_points(self) -> int:
+        """Total number of grid points."""
+        nx, ny, nz = self.dims
+        return nx * ny * nz
+
+    def points_ang(self) -> np.ndarray:
+        """Grid point coordinates in Angstrom, shape ``(n_points, 3)``."""
+        return _grid_points_ang(self.origin_bohr, self.axes_bohr, self.dims)
+
+    def sample(self, field_fn: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
+        """
+        Evaluate a field on this grid.
+
+        :param field_fn: Callable taking points in Angstrom, shape (N, 3), and
+            returning one value per point. It is expected to batch internally.
+        :return: The field with shape :attr:`dims`.
+        """
+        return np.asarray(field_fn(self.points_ang())).reshape(self.dims)
+
+    def __repr__(self) -> str:
+        nx, ny, nz = self.dims
+        spacing = np.linalg.norm(self.axes_bohr, axis=1) * BOHR_TO_ANG
+        return (
+            f"CubeGrid({nx}x{ny}x{nz} = {self.n_points} points, "
+            f"spacing {spacing[0]:.2f} A)"
+        )
+
+
 def write_cube(
     path: str | Path,
     atoms: ScalarField,
@@ -241,43 +312,57 @@ def _write_scalar_cube(
     path: str | Path,
     field_fn: Callable[[np.ndarray], np.ndarray],
     *,
+    grid: CubeGrid | None = None,
     padding: float = 4.0,
     spacing: float = 0.2,
     title1: str = "qpet cube",
     title2: str = "",
 ) -> None:
-    """Sample a scalar field on an auto-sized grid and write a CUBE file.
+    """Sample a scalar field on a grid and write a CUBE file.
 
     ``field_fn`` receives the full point array and is expected to batch
-    internally (the compute methods take ``batch_size`` for that).
+    internally (the compute methods take ``batch_size`` for that). Without an
+    explicit ``grid``, one is auto-sized around ``atoms``.
     """
-    origin_bohr, axes_bohr, dims = _auto_grid(atoms.positions, padding, spacing)
-    pts_ang = _grid_points_ang(origin_bohr, axes_bohr, dims)
-    field = field_fn(pts_ang).reshape(dims)
-    write_cube(path, atoms, field, origin_bohr, axes_bohr, title1=title1, title2=title2)
+    if grid is None:
+        grid = CubeGrid.enclosing(atoms.positions, padding=padding, spacing=spacing)
+    write_cube(
+        path,
+        atoms,
+        grid.sample(field_fn),
+        grid.origin_bohr,
+        grid.axes_bohr,
+        title1=title1,
+        title2=title2,
+    )
 
 
 def write_density_cube(
     atoms: ScalarField,
     path: str | Path,
     *,
+    grid: CubeGrid | None = None,
     padding: float = 4.0,
     spacing: float = 0.2,
     batch_size: int = 5000,
 ) -> None:
     """
-    Write the electron density on an auto-sized grid to a CUBE file.
+    Write the electron density to a CUBE file.
 
     :param atoms: Density object supporting ``density`` (RIDensity, DMDensity, ...)
     :param path: Output file path
-    :param padding: Padding around the molecule in Angstrom (default 4.0)
-    :param spacing: Grid spacing in Angstrom (default 0.2)
+    :param grid: Grid to sample on; auto-sized around ``atoms`` when omitted.
+        Pass an explicit :class:`CubeGrid` when this map must be loaded
+        alongside another one.
+    :param padding: Padding around the molecule in Angstrom (ignored with ``grid``)
+    :param spacing: Grid spacing in Angstrom (ignored with ``grid``)
     :param batch_size: Points evaluated per batch (controls peak memory)
     """
     _write_scalar_cube(
         atoms,
         path,
         lambda p: atoms.density(p, batch_size=batch_size),
+        grid=grid,
         padding=padding,
         spacing=spacing,
         title1="qpet electron density",
@@ -289,25 +374,72 @@ def write_esp_cube(
     atoms: ScalarField,
     path: str | Path,
     *,
+    grid: CubeGrid | None = None,
     padding: float = 4.0,
     spacing: float = 0.2,
     batch_size: int = 5000,
 ) -> None:
     """
-    Write the electrostatic potential on an auto-sized grid to a CUBE file.
+    Write the electrostatic potential to a CUBE file.
 
     :param atoms: Density object supporting ``potential`` (RIDensity, DMDensity, ...)
     :param path: Output file path
-    :param padding: Padding around the molecule in Angstrom (default 4.0)
-    :param spacing: Grid spacing in Angstrom (default 0.2)
+    :param grid: Grid to sample on; auto-sized around ``atoms`` when omitted.
+        Pass an explicit :class:`CubeGrid` to colour a density isosurface by
+        this potential — the two maps must share a grid.
+    :param padding: Padding around the molecule in Angstrom (ignored with ``grid``)
+    :param spacing: Grid spacing in Angstrom (ignored with ``grid``)
     :param batch_size: Points evaluated per batch (controls peak memory)
     """
     _write_scalar_cube(
         atoms,
         path,
         lambda p: atoms.potential(p, batch_size=batch_size),
+        grid=grid,
         padding=padding,
         spacing=spacing,
         title1="qpet electrostatic potential",
         title2="V(r) in atomic units (Hartree / e)",
+    )
+
+
+def write_esp_error_cube(
+    predicted: ScalarField,
+    reference: ScalarField,
+    path: str | Path,
+    *,
+    grid: CubeGrid | None = None,
+    padding: float = 4.0,
+    spacing: float = 0.2,
+    batch_size: int = 5000,
+) -> None:
+    """
+    Write the *signed* ESP error ``V_predicted − V_reference`` to a CUBE file.
+
+    Both fields are sampled on one grid, so the result can colour the same
+    isosurface as the density. The sign is kept: on unseen chemistry the error
+    is dominated by a near-constant offset, and a map of ``|ΔV|`` would hide
+    exactly the structure worth looking at.
+
+    :param predicted: The model's density field.
+    :param reference: The reference density field (a ``DMDensity``, or an
+        ``RIDensity`` built from reference coefficients).
+    :param path: Output file path.
+    :param grid: Grid to sample on; auto-sized around ``predicted`` when omitted.
+    :param padding: Padding around the molecule in Angstrom (ignored with ``grid``)
+    :param spacing: Grid spacing in Angstrom (ignored with ``grid``)
+    :param batch_size: Points evaluated per batch (controls peak memory)
+    """
+    _write_scalar_cube(
+        predicted,
+        path,
+        lambda p: (
+            predicted.potential(p, batch_size=batch_size)
+            - reference.potential(p, batch_size=batch_size)
+        ),
+        grid=grid,
+        padding=padding,
+        spacing=spacing,
+        title1="qpet ESP error (predicted - reference)",
+        title2="dV(r) in atomic units (Hartree / e)",
     )

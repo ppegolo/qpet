@@ -253,3 +253,43 @@ def pyscf_to_atom_string(mol: gto.Mole) -> str:
         _format_atom_line(mol.atom_symbol(i), mol.atom_coord(i) * BOHR_TO_ANG)
         for i in range(mol.natm)
     )
+
+
+def build_mole(
+    symbols: list[str],
+    positions: np.ndarray,
+    *,
+    basis: str,
+    charge: int = 0,
+    spin: int | None = None,
+    verbose: int = 0,
+) -> gto.Mole:
+    """
+    Build a PySCF ``Mole`` from element symbols and positions.
+
+    :param symbols: Element symbol per atom.
+    :param positions: Atomic positions in Angstrom, shape (N, 3).
+    :param basis: Basis set name (e.g. ``"def2-svp"``).
+    :param charge: Total molecular charge.
+    :param spin: Number of unpaired electrons (2S). Defaults to the low-spin
+        value from :func:`qpet.spin_from_parity`.
+    :param verbose: PySCF verbosity.
+    :return: A built ``Mole`` with coordinates in Angstrom.
+    """
+    from .conditioning import spin_from_parity
+
+    positions = np.asarray(positions, dtype=float)
+    if spin is None:
+        numbers = np.array([elements.charge(sym) for sym in symbols])
+        spin = spin_from_parity(numbers, charge=charge)
+    atom_lines = [
+        _format_atom_line(sym, pos) for sym, pos in zip(symbols, positions, strict=True)
+    ]
+    mole: gto.Mole = gto.M(
+        atom="\n".join(atom_lines),
+        basis=basis,
+        charge=charge,
+        spin=spin,
+        verbose=verbose,
+    )
+    return mole
