@@ -151,6 +151,11 @@ class DensityModel:
         :meth:`predict_systems`; unused by :meth:`predict`, which takes the
         caller's ``Mole`` as-is. Set it whenever ``basis`` implies an ECP
         (def2 for I and other heavy p-block).
+    :param oracle_charges: If True, compute GFN2-xTB partial charges for each
+        system (via ``tblite``) and attach them as the ``"mtt::oracle_charges"``
+        conditioning field that oracle-conditioned models read. Harmless for
+        models trained without the conditioning; required to get the
+        conditioned accuracy from models trained with it.
     :param constrain_dipole: If True, apply a charge-neutral correction so
         the electric dipole matches the model-predicted value.
     :param dipole_head: Name of the dipole output in the model (only used
@@ -180,6 +185,7 @@ class DensityModel:
         *,
         normalize_charge: bool = False,
         constrain_dipole: bool = False,
+        oracle_charges: bool = False,
         dipole_head: str = "mtt::electric_dipole",
         ecp: str | None = None,
     ) -> None:
@@ -198,6 +204,7 @@ class DensityModel:
         self.ecp = ecp
         self.normalize_charge = normalize_charge
         self.constrain_dipole = constrain_dipole
+        self.oracle_charges = oracle_charges
         self.dipole_head = dipole_head
 
         # Model-level setup only needed when model is not pre-evaluated.
@@ -311,6 +318,13 @@ class DensityModel:
     def _predict(self, systems: list[System], mols: list[gto.Mole]) -> list[RIDensity]:
         """Shared prediction path: forward pass, conversion, corrections."""
         auxmols = [make_auxmol(mol, self.aux_basis) for mol in mols]
+        if self.oracle_charges:
+            # Same GFN2 computation metatrain runs at training time; a failed
+            # oracle leaves the field absent and the model runs oracle-free.
+            from .conversions import attach_oracle_charges
+
+            for system, mol in zip(systems, mols, strict=True):
+                attach_oracle_charges(system, mol.charge, mol.spin + 1)
         outputs = self._evaluate(systems)
         coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
 
