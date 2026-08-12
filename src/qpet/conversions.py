@@ -293,3 +293,87 @@ def build_mole(
         verbose=verbose,
     )
     return mole
+
+
+def attach_oracle_charges(
+    system: System,
+    charge: int,
+    spin_multiplicity: int = 1,
+    *,
+    overwrite: bool = False,
+) -> System:
+    """
+    Attach GFN2-xTB partial charges for oracle-conditioned models.
+
+    Models trained with metatrain's ``atomic_charge_conditioning`` read a
+    per-atom ``"mtt::oracle_charges"`` field from the System; this computes it with
+    `tblite <https://tblite.readthedocs.io>`_ in the exact layout metatrain
+    attaches during training, so the conditioning is train/deploy symmetric.
+    A System without the field still predicts — the model's mask channel then
+    reads "no oracle" — so this is an accuracy upgrade, not a requirement.
+
+    If the GFN2 calculation fails, nothing is attached and a warning is
+    emitted: the prediction proceeds oracle-free rather than crashing.
+
+    :param system: System to annotate, modified in place.
+    :param charge: Total molecular charge.
+    :param spin_multiplicity: Spin multiplicity 2S+1.
+    :param overwrite: Replace an already-attached field instead of keeping it.
+    :return: The same System, for chaining.
+    """
+    import warnings
+
+    import torch
+    from metatensor.torch import Labels, TensorBlock, TensorMap
+
+    if "mtt::oracle_charges" in system.known_data() and not overwrite:
+        return system
+    try:
+        from tblite.interface import Calculator
+    except ImportError as err:
+        raise ImportError(
+            "oracle-charge conditioning requires `tblite`; install it with "
+            "`pip install tblite`."
+        ) from err
+
+    try:
+        calculator = Calculator(
+            "GFN2-xTB",
+            system.types.detach().cpu().numpy(),
+            system.positions.detach().cpu().double().numpy() / BOHR_TO_ANG,
+            charge=float(charge),
+            uhf=int(spin_multiplicity) - 1,
+        )
+        calculator.set("verbosity", 0)
+        charges = calculator.singlepoint().get("charges")
+    except Exception as err:
+        warnings.warn(
+            f"GFN2 oracle failed ({err}); predicting oracle-free.",
+            stacklevel=2,
+        )
+        return system
+
+    values = torch.from_numpy(charges).reshape(-1, 1).to(
+        dtype=system.positions.dtype, device=system.positions.device
+    )
+    system.add_data(
+        "mtt::oracle_charges",
+        TensorMap(
+            keys=Labels.single(),
+            blocks=[
+                TensorBlock(
+                    values=values,
+                    samples=Labels(
+                        "atom",
+                        torch.arange(
+                            len(values), dtype=torch.int32, device=values.device
+                        ).reshape(-1, 1),
+                    ),
+                    components=[],
+                    properties=Labels.range("charge", 1),
+                )
+            ],
+        ),
+        override=overwrite,
+    )
+    return system
