@@ -359,7 +359,7 @@ def attach_oracle_charges(
     system.add_data(
         "mtt::oracle_charges",
         TensorMap(
-            keys=Labels.single(),
+            keys=Labels.single().to(values.device),
             blocks=[
                 TensorBlock(
                     values=values,
@@ -370,7 +370,7 @@ def attach_oracle_charges(
                         ).reshape(-1, 1),
                     ),
                     components=[],
-                    properties=Labels.range("charge", 1),
+                    properties=Labels.range("charge", 1).to(values.device),
                 )
             ],
         ),
