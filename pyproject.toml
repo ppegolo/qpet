@@ -92,7 +92,7 @@ disable_error_code = [
 # A @triton.jit body is not Python mypy can read: the decorator is untyped, and
 # annotating the kernel's parameters changes how Triton's tracer treats them.
 [[tool.mypy.overrides]]
-module = "qpet.esp_kernel"
+module = "qpet._esp_kernel"
 ignore_errors = true
 
 # ----------------------------

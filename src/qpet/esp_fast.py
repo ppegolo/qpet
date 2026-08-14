@@ -46,6 +46,13 @@ def _monomial_powers(degree: int) -> np.ndarray:
     )
 
 
+def _r2_floor(degree: int, dtype: torch.dtype) -> float:
+    """Squared distance (Bohr^2) below which ``r^-(2l+1)`` would overflow ``dtype``."""
+    import torch
+
+    return max(1e-30, (torch.finfo(dtype).max * 1e-6) ** (-1.0 / (degree + 0.5)))
+
+
 def _fibonacci_directions(n: int) -> np.ndarray:
     golden = np.pi * (3.0 - np.sqrt(5.0))
     index = np.arange(n)
@@ -231,7 +238,6 @@ class FastESP:
                 f"{FIT_TOLERANCE:.0e}; the auxiliary basis does not match the "
                 "assumed functional form"
             )
-        self.fit_residual = worst
 
         # Pad the ragged primitive lists into one rectangular table.
         max_primitives = max(len(e) for e, _ in primitives)
@@ -274,10 +280,12 @@ class FastESP:
                             np.maximum(exponent_table[primitive_index[members]], 1e-30)
                         ).min()
                     ),
+                    # Below it the screened radial factor is at its r -> 0 limit.
+                    "r2_floor": _r2_floor(degree, self.dtype),
                 }
             )
 
-        from qpet.esp_kernel import HAS_TRITON
+        from qpet._esp_kernel import HAS_TRITON
 
         usable = (
             HAS_TRITON
@@ -318,7 +326,7 @@ class FastESP:
             np.asarray(points_bohr), dtype=self.dtype, device=self.device
         )
         if self.backend == "triton":
-            from qpet.esp_kernel import esp_group
+            from qpet._esp_kernel import esp_group
 
             points = points.contiguous()
             total = torch.zeros(len(points), dtype=self.dtype, device=self.device)
@@ -333,6 +341,7 @@ class FastESP:
                     coefficients[index].contiguous(),
                     group["l"],
                     group["cutoff"],
+                    group["r2_floor"],
                 )
             return total.cpu().numpy()
 
@@ -355,12 +364,13 @@ class FastESP:
 
         degree: int = group["l"]
         powers: list[tuple[int, int, int]] = group["powers"]
+        floor: float = group["r2_floor"]
 
         def multipole(
             points: torch.Tensor, centres: torch.Tensor, poly: torch.Tensor
         ) -> tuple[torch.Tensor, torch.Tensor]:
             delta = points[:, None, :] - centres[None, :, :]
-            squared = (delta * delta).sum(dim=-1)
+            squared = (delta * delta).sum(dim=-1).clamp_min(floor)
 
             # Repeated multiplication: `x ** a` calls pow(), far slower.
             axes = []

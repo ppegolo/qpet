@@ -7,8 +7,9 @@ monomials and the radial power unroll with no branching.
 
 Triton has no incomplete gamma, so the screening factor is built from ``erf`` by
 the recurrence ``P(a+1, x) = P(a, x) - x^a e^-x / Gamma(a+1)`` starting from
-``P(1/2, x) = erf(sqrt(x))``. It is evaluated per block, only where it differs
-from one.
+``P(1/2, x) = erf(sqrt(x))``. The recurrence cancels catastrophically for small
+``x``, where the power series ``P(a, x) = x^a e^-x sum_k x^k / Gamma(a+k+1)`` is
+used instead. It is evaluated per block, only where it differs from one.
 """
 
 from __future__ import annotations
@@ -26,8 +27,12 @@ except ImportError:  # pragma: no cover - depends on the environment
     HAS_TRITON = False
 
 
-#: Gamma(k + 3/2) for k = 0, 1, ...; the recurrence's denominators.
-_GAMMA_HALF = [math.gamma(k + 1.5) for k in range(8)]
+#: Gamma(k + 3/2) for k = 0, ..., 4; the recurrence's and series' denominators.
+_GAMMA_HALF = [math.gamma(k + 1.5) for k in range(5)]
+
+#: Below this ``x`` the screening factor is summed as a series of this many terms.
+_SERIES_X = 4.0
+_SERIES_TERMS = 20
 
 
 if HAS_TRITON:
@@ -44,13 +49,17 @@ if HAS_TRITON:
         n_points,
         n_functions,
         cutoff_squared,
+        r2_floor,
         gamma0,
         gamma1,
         gamma2,
         gamma3,
+        gamma_l,
         L: tl.constexpr,
         N_TERMS: tl.constexpr,
         N_PRIM: tl.constexpr,
+        SERIES_X: tl.constexpr,
+        SERIES_TERMS: tl.constexpr,
         BLOCK_P: tl.constexpr,
         BLOCK_A: tl.constexpr,
     ):
@@ -77,9 +86,9 @@ if HAS_TRITON:
             dy = py[:, None] - ay[None, :]
             dz = pz[:, None] - az[None, :]
             r2 = dx * dx + dy * dy + dz * dz
-            # A point sitting exactly on a centre is not physical here, and the
-            # guard costs nothing next to the rest of the arithmetic.
-            r2 = tl.where(r2 > 1e-30, r2, 1e-30)
+            # Below the floor the screened radial factor is already at its r -> 0
+            # limit, and r^-(2l+1) would overflow.
+            r2 = tl.where(r2 > r2_floor, r2, r2_floor)
 
             # Each monomial is built by unrolled multiplication rather than by
             # indexing a table of powers: the tracer turns Python containers into
@@ -141,6 +150,12 @@ if HAS_TRITON:
                         if L >= 4:
                             xa = xa * x
                             gamma_p -= xa * decay / gamma3
+                        summand = xa * x * decay / gamma_l
+                        series = summand
+                        for k in range(1, SERIES_TERMS):
+                            summand = summand * x / (L + 0.5 + k)
+                            series += summand
+                        gamma_p = tl.where(x < SERIES_X, series, gamma_p)
                     screening += weight[None, :] * gamma_p
                 value = tl.where(r2 < cutoff_squared, value * screening, value)
 
@@ -158,6 +173,7 @@ def esp_group(
     coefficients: torch.Tensor,
     angular_momentum: int,
     cutoff: float,
+    r2_floor: float,
     block_points: int = 64,
     block_functions: int = 64,
 ) -> torch.Tensor:
@@ -171,15 +187,9 @@ def esp_group(
     :param coefficients: ``(n_functions,)`` RI coefficients.
     :param angular_momentum: ``l`` of this group.
     :param cutoff: radius beyond which the screening factor is one.
+    :param r2_floor: squared distance below which ``r^2`` is clamped.
     :return: ``(n_points,)`` potential contribution.
     """
-    if not HAS_TRITON:
-        raise RuntimeError("the fused ESP kernel needs Triton")
-    if angular_momentum > 4:
-        raise NotImplementedError(
-            f"the fused ESP kernel handles l <= 4, got l = {angular_momentum}"
-        )
-
     n_points = points.shape[0]
     out = torch.empty(n_points, dtype=torch.float32, device=points.device)
     grid = (triton.cdiv(n_points, block_points),)
@@ -195,13 +205,14 @@ def esp_group(
         n_points,
         centres.shape[0],
         cutoff * cutoff,
-        _GAMMA_HALF[0],
-        _GAMMA_HALF[1],
-        _GAMMA_HALF[2],
-        _GAMMA_HALF[3],
+        r2_floor,
+        *_GAMMA_HALF[:4],
+        _GAMMA_HALF[angular_momentum],
         L=angular_momentum,
         N_TERMS=polynomial.shape[1],
         N_PRIM=exponents.shape[1],
+        SERIES_X=_SERIES_X,
+        SERIES_TERMS=_SERIES_TERMS,
         BLOCK_P=block_points,
         BLOCK_A=block_functions,
         num_warps=4,
