@@ -353,8 +353,10 @@ def attach_oracle_charges(
         )
         return system
 
-    values = torch.from_numpy(charges).reshape(-1, 1).to(
-        dtype=system.positions.dtype, device=system.positions.device
+    values = (
+        torch.from_numpy(charges)
+        .reshape(-1, 1)
+        .to(dtype=system.positions.dtype, device=system.positions.device)
     )
     system.add_data(
         "mtt::oracle_charges",

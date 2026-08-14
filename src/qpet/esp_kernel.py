@@ -1,22 +1,14 @@
 """Fused Triton kernel for the closed-form ESP.
 
-The evaluation in :mod:`qpet.esp_fast` produces one value per grid point, but its
-intermediates are point-by-function. Written with array operations those
-intermediates get written to memory and read back -- at five thousand atoms on a
-surface grid that is 2.7e9 elements per pass, and the whole thing is bandwidth
-bound. Fused into one kernel the pair array never exists: each program keeps a
-block of points in registers, streams the auxiliary functions past them, and
-accumulates.
-
-Angular momentum is a compile-time constant, one specialisation per ``l`` present,
-so the monomials and the radial power unroll with no branching.
+The array evaluation in :mod:`qpet.esp_fast` writes its point-by-function
+intermediates to memory and reads them back; fused, the pair array never exists.
+Angular momentum is a compile-time constant, one specialisation per ``l``, so the
+monomials and the radial power unroll with no branching.
 
 Triton has no incomplete gamma, so the screening factor is built from ``erf`` by
 the recurrence ``P(a+1, x) = P(a, x) - x^a e^-x / Gamma(a+1)`` starting from
-``P(1/2, x) = erf(sqrt(x))`` -- exact to 1e-15 against scipy for every ``l`` here.
-It is only evaluated where it differs from one, which is under one percent of pairs
-on a large system, and the test is made per block so a block entirely in the far
-field skips it altogether.
+``P(1/2, x) = erf(sqrt(x))``. It is evaluated per block, only where it differs
+from one.
 """
 
 from __future__ import annotations
