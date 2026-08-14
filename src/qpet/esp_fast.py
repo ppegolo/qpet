@@ -1,39 +1,33 @@
-"""Fast electrostatic potential from RI coefficients, in closed form on the GPU.
+"""Electrostatic potential from RI coefficients in closed form, on the GPU.
 
-:meth:`qpet.fields.RIDensity.potential` calls libcint for every (auxiliary
-function, grid point) pair -- about 8 ns each, which at five thousand atoms on a
-solvent-accessible surface grid is twenty seconds, roughly a hundred times the cost
-of predicting the density in the first place.
-
-That work has a closed form. The potential of a solid-harmonic Gaussian of degree
-``l`` and exponent ``alpha`` at displacement ``R`` is
+The potential of a solid-harmonic Gaussian of degree ``l`` and exponent ``alpha``
+at displacement ``R`` is
 
     V(R) = P(R) / |R|^(2l+1) * gammainc(l + 1/2, alpha |R|^2)
 
 with ``P`` a homogeneous polynomial of degree ``l`` and ``gammainc`` the
-*regularised* lower incomplete gamma. Far out the gamma factor saturates to one and
-this is the bare ``2^l`` multipole; close in it screens the singularity. For
-``l = 0`` it is the familiar ``erf(sqrt(alpha) R) / R``. It is exact at every
-distance, so there is no near field to special-case -- the whole evaluation is a
-handful of floating-point operations per pair and runs on the GPU.
+*regularised* lower incomplete gamma. It is exact at every distance, so there is
+no near field to special-case, and it replaces the libcint call
+:meth:`qpet.fields.RIDensity.potential` otherwise makes for every (auxiliary
+function, grid point) pair.
 
-**Why the shapes are fitted rather than written down.** Committing ``P`` to code
-means committing to PySCF's real-spherical ordering, sign convention and shell
-normalisation, and getting any of that wrong yields a silently wrong potential
-rather than an error. Instead the angular polynomials and the per-primitive radial
-weights are recovered by least squares from PySCF's own exact integrals, and both
-fits are residual-checked at construction. A convention mismatch fails the check
-instead of propagating.
+``P`` and the per-primitive radial weights are recovered by least squares from
+PySCF's own integrals rather than written out, and residual-checked at
+construction: hardcoding them would mean hardcoding PySCF's real-spherical
+ordering and normalisation, where a mistake gives a silently wrong potential
+instead of an error.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pyscf import gto
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import torch
 
 #: Residual above which a fitted shell is rejected rather than trusted.
@@ -82,8 +76,13 @@ def _fit_shell(
     coefficients = np.asarray(auxmol.bas_ctr_coeff(shell)).reshape(len(exponents), -1)
     probe.basis = {
         "H": [
-            [angular, *[[float(e), *[float(c) for c in row]] for e, row in
-                        zip(exponents, coefficients)]]
+            [
+                angular,
+                *[
+                    [float(e), *[float(c) for c in row]]
+                    for e, row in zip(exponents, coefficients, strict=True)
+                ],
+            ]
         ]
     }
     probe.spin = 1
@@ -135,7 +134,9 @@ def _fit_shell(
     target = near_exact[component] * radii ** (angular + 1) / angular_value[component]
     weights, *_ = np.linalg.lstsq(basis, target, rcond=None)
     predicted = basis @ weights
-    residual = max(residual, np.abs(predicted - target).max() / max(np.abs(target).max(), 1e-300))
+    residual = max(
+        residual, np.abs(predicted - target).max() / max(np.abs(target).max(), 1e-300)
+    )
 
     return polynomials, exponents, weights, residual
 
@@ -147,39 +148,43 @@ class FastESP:
     coefficient vectors and grids.
 
     :param auxmol: the auxiliary ``Mole`` an :class:`~qpet.fields.RIDensity` carries.
-    :param device: torch device for the evaluation.
+    :param device: torch device for the evaluation. ``"cuda"`` is the default and
+        falls back to the CPU when no GPU is present; any other value is honoured
+        as asked for.
     :param dtype: ``torch.float64`` reproduces libcint to ~1e-12; ``torch.float32``
-        is several times faster and still far below the error of a float32 density
-        prediction.
-    :param compile: fuse the array evaluation with ``torch.compile``. Ignored when
-        the Triton kernel is in use.
+        is far below the error of a float32 density prediction.
     :param backend: ``"triton"`` for the fused kernel, ``"torch"`` for the array
-        implementation, ``None`` to prefer the kernel where it applies. The kernel
-        holds the point-by-function intermediates in registers instead of memory.
+        implementation, ``None`` to prefer the kernel where it applies.
     """
 
     def __init__(
         self,
         auxmol: gto.Mole,
         device: str = "cuda",
-        dtype: "torch.dtype | None" = None,  # noqa: F821
-        compile: bool = True,
+        dtype: torch.dtype | None = None,
         backend: str | None = None,
     ) -> None:
         import torch
 
+        if backend not in (None, "torch", "triton"):
+            raise ValueError(
+                f"Unknown backend {backend!r}. Use 'torch', 'triton', or None."
+            )
+
         self.auxmol = auxmol
         self.dtype = dtype or torch.float64
-        self.device = torch.device(
-            device if (device == "cpu" or torch.cuda.is_available()) else "cpu"
-        )
+        # The default is a request to use a GPU if there is one, so it falls back;
+        # anything named explicitly is taken at its word.
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "cpu"
+        self.device = torch.device(device)
 
         directions = _fibonacci_directions(96)
         max_angular = max(auxmol.bas_angular(i) for i in range(auxmol.nbas))
 
-        # One monomial table spanning every degree present, with the block for
-        # each degree recorded. A per-degree table would not do: functions of
-        # different l live in the same array and must index the same columns.
+        # One monomial table spanning every degree, with each degree's block
+        # recorded: functions of different l share the array and must index the
+        # same columns.
         blocks, offsets, cursor = [], {}, 0
         for degree in range(max_angular + 1):
             powers = _monomial_powers(degree)
@@ -196,14 +201,14 @@ class FastESP:
         primitives: list[tuple[np.ndarray, np.ndarray]] = []
         primitive_index = np.zeros(n_aux, dtype=np.int64)
 
-        cache: dict[tuple, tuple] = {}
+        cache: dict[tuple[Any, ...], tuple[Any, ...]] = {}
         offset = 0
         worst = 0.0
         for shell in range(auxmol.nbas):
-            l = int(auxmol.bas_angular(shell))
-            n_components = 2 * l + 1
+            degree = int(auxmol.bas_angular(shell))
+            n_components = 2 * degree + 1
             signature = (
-                l,
+                degree,
                 tuple(np.round(np.asarray(auxmol.bas_exp(shell)), 12)),
                 tuple(np.round(np.asarray(auxmol.bas_ctr_coeff(shell)).ravel(), 12)),
             )
@@ -212,9 +217,9 @@ class FastESP:
             polynomials, exponents, weights, residual = cache[signature]
             worst = max(worst, residual)
 
-            low, high = offsets[l]
+            low, high = offsets[degree]
             polynomial[offset : offset + n_components, low:high] = polynomials
-            angular[offset : offset + n_components] = l
+            angular[offset : offset + n_components] = degree
             atom[offset : offset + n_components] = auxmol.bas_atom(shell)
             primitive_index[offset : offset + n_components] = len(primitives)
             primitives.append((exponents, weights))
@@ -222,8 +227,9 @@ class FastESP:
 
         if worst > FIT_TOLERANCE:
             raise RuntimeError(
-                f"closed-form ESP fit residual {worst:.2e} exceeds {FIT_TOLERANCE:.0e}; "
-                "the auxiliary basis does not match the assumed functional form"
+                f"closed-form ESP fit residual {worst:.2e} exceeds "
+                f"{FIT_TOLERANCE:.0e}; the auxiliary basis does not match the "
+                "assumed functional form"
             )
         self.fit_residual = worst
 
@@ -235,22 +241,16 @@ class FastESP:
             exponent_table[i, : len(exponents)] = exponents
             weight_table[i, : len(weights)] = weights
 
-        as_tensor = lambda a, d=None: torch.as_tensor(  # noqa: E731
-            a, dtype=d or self.dtype, device=self.device
-        )
+        def as_tensor(a: np.ndarray, d: torch.dtype | None = None) -> torch.Tensor:
+            return torch.as_tensor(a, dtype=d or self.dtype, device=self.device)
+
         self._centres = as_tensor(auxmol.atom_coords()[atom])
-        self._polynomial = as_tensor(polynomial)
-        self._angular = as_tensor(angular, torch.long)
-        self._powers = as_tensor(all_powers, torch.long)
-        self._exponents = as_tensor(exponent_table)[primitive_index]
-        self._weights = as_tensor(weight_table)[primitive_index]
-        self._max_angular = max_angular
 
         # Group by angular momentum. Looping every monomial over every function
         # costs the full pair array once per term even where the coefficient is
         # zero; a degree-l function only ever needs its own (l+1)(l+2)/2 terms, and
         # a basis is dominated by low l.
-        self._groups = []
+        self._groups: list[dict[str, Any]] = []
         for degree in range(max_angular + 1):
             members = np.flatnonzero(angular == degree)
             if len(members) == 0:
@@ -260,14 +260,17 @@ class FastESP:
                 {
                     "l": degree,
                     "index": as_tensor(members, torch.long),
-                    "powers": [tuple(int(x) for x in row) for row in all_powers[low:high]],
+                    "powers": [
+                        tuple(int(x) for x in row) for row in all_powers[low:high]
+                    ],
                     "poly": as_tensor(polynomial[members, low:high]),
                     "exponents": as_tensor(exponent_table[primitive_index[members]]),
                     "weights": as_tensor(weight_table[primitive_index[members]]),
                     # Beyond this the gamma factor is one to float32 round-off, so
                     # the screening is skipped and the bare multipole is exact.
                     "cutoff": float(
-                        6.5 / np.sqrt(
+                        6.5
+                        / np.sqrt(
                             np.maximum(exponent_table[primitive_index[members]], 1e-30)
                         ).min()
                     ),
@@ -289,9 +292,11 @@ class FastESP:
             )
         self.backend = "triton" if (backend != "torch" and usable) else "torch"
 
-        self._evaluate_group = self._batch_group
-        if self.backend == "torch" and compile and self.device.type == "cuda":
-            self._evaluate_group = torch.compile(self._batch_group, dynamic=True)
+        # One compiled callable per group: a shared one re-specialises on each
+        # group's l and blows dynamo's recompile limit.
+        compile_groups = self.backend == "torch" and self.device.type == "cuda"
+        for group in self._groups:
+            group["multipole"] = self._make_multipole(group, compile_groups)
 
     def potential(
         self, coeffs: np.ndarray, points_bohr: np.ndarray, batch_size: int = 512
@@ -338,51 +343,68 @@ class FastESP:
             out[start:stop] = self._batch(coefficients, points[start:stop])
         return out.cpu().numpy()
 
-    def _batch(
-        self, coefficients: "torch.Tensor", points: "torch.Tensor"
-    ) -> "torch.Tensor":
+    def _make_multipole(
+        self, group: dict[str, Any], compile_it: bool
+    ) -> Callable[..., tuple[torch.Tensor, torch.Tensor]]:
+        """Build this group's bare multipole, exact outside the screening cutoff.
+
+        ``l`` and the monomial exponents are captured as Python constants, so the
+        loops unroll once per group instead of being guarded on every call.
+        """
+        import torch
+
+        degree: int = group["l"]
+        powers: list[tuple[int, int, int]] = group["powers"]
+
+        def multipole(
+            points: torch.Tensor, centres: torch.Tensor, poly: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            delta = points[:, None, :] - centres[None, :, :]
+            squared = (delta * delta).sum(dim=-1)
+
+            # Repeated multiplication: `x ** a` calls pow(), far slower.
+            axes = []
+            for axis in range(3):
+                ladder = [torch.ones_like(squared)]
+                for _ in range(degree):
+                    ladder.append(ladder[-1] * delta[..., axis])
+                axes.append(ladder)
+
+            angular_value = torch.zeros_like(squared)
+            for term, (a, b, c) in enumerate(powers):
+                angular_value = angular_value + poly[:, term][None, :] * (
+                    axes[0][a] * axes[1][b] * axes[2][c]
+                )
+
+            # 1 / R^(2l+1) by rsqrt and multiplies, for the same reason.
+            inverse = torch.rsqrt(squared)
+            radial = inverse
+            for _ in range(2 * degree):
+                radial = radial * inverse
+            return angular_value * radial, squared
+
+        return torch.compile(multipole, dynamic=True) if compile_it else multipole
+
+    def _batch(self, coefficients: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
         import torch
 
         total = torch.zeros(points.shape[0], dtype=self.dtype, device=self.device)
         for group in self._groups:
-            total = total + self._evaluate_group(coefficients, points, group)
+            total = total + self._batch_group(coefficients, points, group)
         return total
 
     def _batch_group(
-        self, coefficients: "torch.Tensor", points: "torch.Tensor", group: dict
-    ) -> "torch.Tensor":
+        self, coefficients: torch.Tensor, points: torch.Tensor, group: dict[str, Any]
+    ) -> torch.Tensor:
         import torch
 
         index = group["index"]
-        l = group["l"]
-        delta = points[:, None, :] - self._centres[index][None, :, :]
-        squared = (delta * delta).sum(dim=-1)
+        degree = group["l"]
+        value, squared = group["multipole"](points, self._centres[index], group["poly"])
 
-        # Integer powers of each component, built by repeated multiplication:
-        # `x ** a` calls pow(), which is far slower than l - 1 multiplies.
-        axes = []
-        for axis in range(3):
-            ladder = [torch.ones_like(squared)]
-            for _ in range(l):
-                ladder.append(ladder[-1] * delta[..., axis])
-            axes.append(ladder)
-
-        angular_value = torch.zeros_like(squared)
-        poly = group["poly"]
-        for term, (a, b, c) in enumerate(group["powers"]):
-            angular_value = angular_value + poly[:, term][None, :] * (
-                axes[0][a] * axes[1][b] * axes[2][c]
-            )
-
-        # 1 / R^(2l+1) by rsqrt and multiplies: `pow` with a fractional exponent
-        # is exp(log(x) * e), two transcendentals on every pair.
-        inverse = torch.rsqrt(squared)
-        radial = inverse
-        for _ in range(2 * l):
-            radial = radial * inverse
-        value = angular_value * radial
-
-        # The gamma factor is one except close in, so it is evaluated only there.
+        # The gamma factor is one except close in, so it is evaluated only
+        # there. Left uncompiled: the test is data-dependent and would break the
+        # graph wherever it sat.
         near = squared < group["cutoff"] ** 2
         if bool(near.any()):
             rows, columns = near.nonzero(as_tuple=True)
@@ -392,10 +414,9 @@ class FastESP:
             weights = group["weights"][columns]
             for primitive in range(exponents.shape[1]):
                 screening = screening + weights[:, primitive] * torch.special.gammainc(
-                    torch.full_like(near_squared, l + 0.5),
+                    torch.full_like(near_squared, degree + 0.5),
                     exponents[:, primitive].clamp_min(1e-30) * near_squared,
                 )
             value[rows, columns] = value[rows, columns] * screening
 
         return (value * coefficients[index][None, :]).sum(dim=1)
-
