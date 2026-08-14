@@ -17,8 +17,9 @@ Points are given in Angstrom; all returned values are in atomic units.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 from pyscf import df, gto
@@ -26,11 +27,20 @@ from pyscf import df, gto
 from qpet.basis import make_auxmol
 from qpet.conversions import BOHR_TO_ANG
 
+if TYPE_CHECKING:
+    from qpet.esp_fast import FastESP
+
+logger = logging.getLogger(__name__)
+
 # Clamp distance to avoid singularity at nuclei (Bohr).
 _DIST_FLOOR: float = 0.1
 
+#: Grid size below which :meth:`RIDensity.potential` stays on libcint: smaller
+#: than this and the closed form's fit costs more than the evaluation saves.
+FAST_ESP_MIN_POINTS = 1000
 
-def _nuclear_potential(
+
+def nuclear_potential(
     positions_bohr: np.ndarray,
     charges: np.ndarray,
     pts_bohr: np.ndarray,
@@ -157,9 +167,7 @@ class DMDensity:
         :return: Electrostatic potential in atomic units, shape (N,)
         """
         pts_bohr = pts / BOHR_TO_ANG
-        v_nuc = _nuclear_potential(
-            self.mol.atom_coords(), self.atomic_numbers, pts_bohr
-        )
+        v_nuc = nuclear_potential(self.mol.atom_coords(), self.atomic_numbers, pts_bohr)
         v_ele = np.zeros(len(pts_bohr))
         for p0 in range(0, len(pts_bohr), batch_size):
             p1 = min(p0 + batch_size, len(pts_bohr))
@@ -199,6 +207,8 @@ class RIDensity:
             )
         self.auxmol = auxmol
         self.coeffs = coeffs
+        self._fast: FastESP | None = None
+        self._no_fast = False  # the fit was tried for this basis and failed
 
     @classmethod
     def from_dm(cls, mol: gto.Mole, dm: np.ndarray, aux_basis: str) -> RIDensity:
@@ -293,18 +303,37 @@ class RIDensity:
             rho[p0:p1] = chi @ self.coeffs
         return rho
 
-    def potential(self, pts: np.ndarray, batch_size: int = 2000) -> np.ndarray:
+    def potential(
+        self, pts: np.ndarray, batch_size: int = 2000, fast: bool | None = None
+    ) -> np.ndarray:
         """
         Compute ESP from the RI coefficients.
 
+        Two implementations of the same quantity: libcint, and the closed form
+        in :class:`~qpet.esp_fast.FastESP`, which is much faster on a GPU and
+        slower than libcint anywhere else. The fast path runs in float32 and so
+        carries ~1e-5 relative error, below that of a float32 density prediction
+        but not what ``fast=False`` gives you.
+
         :param pts: Evaluation points in Angstrom, shape (N, 3)
         :param batch_size: Points evaluated per batch (controls peak memory)
+        :param fast: Which implementation to use. ``None`` (the default) picks
+            the closed form when it pays and can be trusted: a CUDA device, at
+            least :data:`FAST_ESP_MIN_POINTS` points, and an auxiliary basis
+            whose fit passes its residual check. ``True`` forces it and raises
+            if the fit fails; ``False`` forces libcint.
         :return: Electrostatic potential in atomic units, shape (N,)
         """
         pts_bohr = pts / BOHR_TO_ANG
-        v_nuc = _nuclear_potential(
+        v_nuc = nuclear_potential(
             self.auxmol.atom_coords(), self.atomic_numbers, pts_bohr
         )
+
+        if fast is not False:
+            evaluator = self._fast_esp(len(pts_bohr), force=bool(fast))
+            if evaluator is not None:
+                return v_nuc - evaluator.potential(self.coeffs, pts_bohr)
+
         v_ele = np.zeros(len(pts_bohr))
         for p0 in range(0, len(pts_bohr), batch_size):
             p1 = min(p0 + batch_size, len(pts_bohr))
@@ -312,6 +341,42 @@ class RIDensity:
             v_Pp = gto.mole.intor_cross("int2c2e", self.auxmol, fakemol)
             v_ele[p0:p1] = self.coeffs @ v_Pp
         return v_nuc - v_ele
+
+    def _fast_esp(self, n_points: int, *, force: bool) -> FastESP | None:
+        """This density's closed-form evaluator, built once, or ``None``.
+
+        :param n_points: Size of the grid being asked for; too small a grid does
+            not repay the fit.
+        :param force: Build regardless of device and grid size, and let a failed
+            fit raise.
+        """
+        import torch
+
+        cuda = torch.cuda.is_available()
+        # The gate comes first: a cached evaluator built for an earlier forced
+        # call must not turn every later grid into a closed-form one, least of
+        # all on a CPU, where it is slower than libcint.
+        if not force and (self._no_fast or not cuda or n_points < FAST_ESP_MIN_POINTS):
+            return None
+        if self._fast is not None:
+            return self._fast
+
+        from qpet.esp_fast import FastESP
+
+        device = "cuda" if cuda else "cpu"
+        # float32 is well below the error of the density being evaluated, but
+        # only on a GPU is it the faster choice.
+        dtype = torch.float32 if cuda else torch.float64
+        try:
+            self._fast = FastESP(self.auxmol, device=device, dtype=dtype)
+        except RuntimeError as error:
+            # Asked for explicitly a failed fit is an error; left to itself it is
+            # a reason to use libcint.
+            if force:
+                raise
+            self._no_fast = True
+            logger.info("closed-form ESP unavailable, using libcint: %s", error)
+        return self._fast
 
     # -- multipoles (delegate to qpet.moments) ---------------------------- #
 

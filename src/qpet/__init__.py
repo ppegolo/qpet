@@ -29,7 +29,8 @@ from .cube import (
     write_esp_cube,
     write_esp_error_cube,
 )
-from .fields import DMDensity, RIDensity, ScalarField
+from .esp_fast import FastESP
+from .fields import DMDensity, RIDensity, ScalarField, nuclear_potential
 from .model import DensityModel
 from .moments import (
     apply_dipole_correction,
@@ -58,6 +59,8 @@ __all__ = [
     "DMDensity",
     "ScalarField",
     "DensityModel",
+    "FastESP",
+    "nuclear_potential",
     "dm_from_auxdensity",
     "spin_from_parity",
     "check_spin",

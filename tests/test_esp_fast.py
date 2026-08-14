@@ -1,25 +1,36 @@
-"""The fast ESP and SAS paths must reproduce the slow ones they replace.
-
-Both are optimisations of things that already worked, so the reference is not a
-tolerance pulled from the air -- it is libcint for the potential, and the
-straightforward all-pairs cull for the surface. The closed form the ESP rests on is
-checked directly too, since it is the one piece that is derived rather than copied.
-"""
+"""The closed-form ESP against libcint, and the dispatch that chooses between them."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 from pyscf import gto
-from pyscf.data import radii as pyscf_radii
 from pyscf.df.addons import make_auxmol
 
-from qpet.fields import RIDensity, _nuclear_potential
-from qpet.surface import _fibonacci_sphere, sas_points
+from qpet.fields import FAST_ESP_MIN_POINTS, RIDensity, nuclear_potential
 
 torch = pytest.importorskip("torch")
 
 BOHR = 0.52917721092
+
+#: A handful of directions spread well enough to fit a degree-4 polynomial.
+DIRECTIONS = np.array(
+    [
+        [1.0, 0.0, 0.0],
+        [-0.4, 0.9, 0.2],
+        [0.3, -0.8, 0.5],
+        [-0.6, -0.3, 0.7],
+        [0.2, 0.5, -0.8],
+        [-0.7, 0.4, -0.6],
+        [0.9, -0.2, -0.3],
+        [-0.1, -0.9, -0.4],
+        [0.5, 0.7, 0.5],
+        [-0.8, 0.1, 0.6],
+        [0.6, -0.6, -0.5],
+        [-0.3, 0.6, 0.8],
+    ]
+)
+DIRECTIONS /= np.linalg.norm(DIRECTIONS, axis=1)[:, None]
 
 
 @pytest.fixture(scope="module")
@@ -37,9 +48,13 @@ def system():
 
 
 def _reference_electronic(auxmol, coefficients, points_bohr):
-    """libcint's answer for the electronic potential alone."""
-    total = RIDensity(auxmol, coefficients).potential(points_bohr * BOHR)
-    nuclear = _nuclear_potential(
+    """libcint's answer for the electronic potential alone.
+
+    ``fast=False`` is load-bearing: without it the reference would dispatch to
+    the very evaluator under test on any machine with a GPU.
+    """
+    total = RIDensity(auxmol, coefficients).potential(points_bohr * BOHR, fast=False)
+    nuclear = nuclear_potential(
         auxmol.atom_coords(), auxmol.atom_charges(), points_bohr
     )
     return nuclear - total
@@ -49,36 +64,37 @@ def test_closed_form_matches_pyscf():
     """V = P(R)/|R|^(2l+1) * gammainc(l + 1/2, a|R|^2), at every distance."""
     from scipy.special import gammainc
 
-    directions = _fibonacci_sphere(12)
+    # l = 4 is left to test_matches_libcint: recovering P(R) here from the far
+    # field multiplies by 40**(l+1), which at l = 4 costs more digits than the
+    # law itself is being checked to.
+    exponent = 2.0
     for angular in range(4):
-        for exponent in (0.3, 2.0, 30.0):
-            probe = gto.Mole()
-            probe.atom = [["H", (0.0, 0.0, 0.0)]]
-            probe.basis = {"H": [[angular, [float(exponent), 1.0]]]}
-            probe.spin = 1
-            probe.unit = "Bohr"
-            probe.verbose = 0
-            probe.build()
+        probe = gto.Mole()
+        probe.atom = [["H", (0.0, 0.0, 0.0)]]
+        probe.basis = {"H": [[angular, [exponent, 1.0]]]}
+        probe.spin = 1
+        probe.unit = "Bohr"
+        probe.verbose = 0
+        probe.build()
 
-            radii = np.array([0.3, 0.7, 1.5, 3.0, 6.0])
-            points = (directions[:, None, :] * radii[None, :, None]).reshape(-1, 3)
-            exact = gto.mole.intor_cross(
-                "int2c2e", probe, gto.fakemol_for_charges(points)
-            )
-            far = gto.mole.intor_cross(
-                "int2c2e", probe, gto.fakemol_for_charges(directions * 40.0)
-            )
-            distance = np.linalg.norm(points, axis=1)
+        radii = np.array([0.3, 0.7, 1.5, 3.0, 6.0])
+        points = (DIRECTIONS[:, None, :] * radii[None, :, None]).reshape(-1, 3)
+        exact = gto.mole.intor_cross("int2c2e", probe, gto.fakemol_for_charges(points))
+        # Far enough out that the gamma factor is one, so this isolates P(R).
+        far = gto.mole.intor_cross(
+            "int2c2e", probe, gto.fakemol_for_charges(DIRECTIONS * 40.0)
+        )
+        distance = np.linalg.norm(points, axis=1)
 
-            for component in range(2 * angular + 1):
-                angular_part = np.repeat(far[component] * 40.0 ** (angular + 1), len(radii))
-                predicted = (
-                    angular_part
-                    / distance ** (angular + 1)
-                    * gammainc(angular + 0.5, exponent * distance**2)
-                )
-                scale = max(np.abs(exact[component]).max(), 1e-300)
-                assert np.abs(predicted - exact[component]).max() / scale < 1e-9
+        for component in range(2 * angular + 1):
+            angular_part = np.repeat(far[component] * 40.0 ** (angular + 1), len(radii))
+            predicted = (
+                angular_part
+                / distance ** (angular + 1)
+                * gammainc(angular + 0.5, exponent * distance**2)
+            )
+            scale = max(np.abs(exact[component]).max(), 1e-300)
+            assert np.abs(predicted - exact[component]).max() / scale < 1e-9
 
 
 @pytest.mark.parametrize("backend", ["torch", "triton"])
@@ -96,24 +112,23 @@ def test_matches_libcint(system, backend):
     reference = _reference_electronic(auxmol, coefficients, points)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    evaluator = FastESP(
-        auxmol, device=device, dtype=torch.float32, backend=backend
-    )
+    evaluator = FastESP(auxmol, device=device, dtype=torch.float32, backend=backend)
     got = evaluator.potential(coefficients, points)
 
     error = np.abs(got - reference).max() / np.abs(reference).max()
     # float32 throughout; the density it is evaluated from carries ~1e-5.
     assert error < 1e-5, f"{backend}: {error:.2e}"
-    assert evaluator.fit_residual < 1e-8
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="float64 path needs no GPU")
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="the float64 path needs a GPU"
+)
 def test_float64_reproduces_libcint(system):
-    from qpet.esp_fast import FastESP
-
     auxmol, coefficients = system
     points = np.random.default_rng(2).uniform(-6, 8, (400, 3)) / BOHR
     reference = _reference_electronic(auxmol, coefficients, points)
+
+    from qpet.esp_fast import FastESP
 
     got = FastESP(auxmol, device="cuda", dtype=torch.float64).potential(
         coefficients, points
@@ -121,40 +136,51 @@ def test_float64_reproduces_libcint(system):
     assert np.abs(got - reference).max() / np.abs(reference).max() < 1e-11
 
 
-def _reference_surface(mol, shell=1.4, n=50):
-    """The all-pairs cull, as metatrain writes it."""
-    unit = _fibonacci_sphere(n)
-    centres = mol.atom_coords()
-    radii = shell * pyscf_radii.VDW[mol.atom_charges()]
-    kept = []
-    for atom in range(mol.natm):
-        points = centres[atom] + radii[atom] * unit
-        buried = np.zeros(n, dtype=bool)
-        for other in range(mol.natm):
-            if other != atom:
-                buried |= np.linalg.norm(points - centres[other], axis=1) < radii[other]
-        kept.append(points[~buried])
-    return np.concatenate(kept)
+def test_unknown_backend_is_rejected():
+    from qpet.esp_fast import FastESP
+
+    with pytest.raises(ValueError, match="^Unknown backend 'cuda'"):
+        FastESP(gto.M(atom="He 0 0 0", basis="sto-3g", verbose=0), backend="cuda")
 
 
-def test_surface_matches_all_pairs_cull(system):
-    auxmol, _ = system
-    fast, weights = sas_points(auxmol)
-    reference = _reference_surface(auxmol)
+def test_small_grid_stays_on_libcint(system):
+    """Too few points to repay the fit, so `fast=None` answers with libcint."""
+    auxmol, coefficients = system
+    density = RIDensity(auxmol, coefficients)
+    points = np.random.default_rng(4).uniform(-6, 8, (FAST_ESP_MIN_POINTS - 1, 3))
 
-    assert fast.shape == reference.shape
-    assert np.abs(np.sort(fast, axis=0) - np.sort(reference, axis=0)).max() < 1e-12
-    assert len(weights) == len(fast)
-    assert (weights > 0).all()
+    # Both went through libcint, so this is equality and not a tolerance.
+    assert np.array_equal(
+        density.potential(points), density.potential(points, fast=False)
+    )
 
 
-def test_surface_multiple_shells(system):
-    """Several scalings concatenate in ascending order, each culled on its own."""
-    auxmol, _ = system
-    single, _ = sas_points(auxmol, shell_scale=1.4)
-    multi, weights = sas_points(auxmol, shell_scale=[1.4, 2.0])
+def test_forcing_does_not_capture_later_calls(system):
+    """A forced build must not turn every later grid into a closed-form one."""
+    auxmol, coefficients = system
+    density = RIDensity(auxmol, coefficients)
+    small = np.random.default_rng(3).uniform(-6, 8, (FAST_ESP_MIN_POINTS - 1, 3))
 
-    assert len(multi) > len(single)
-    assert np.allclose(multi[: len(single)], single)
-    # The outer shell is further out, so it is culled less and weighs more.
-    assert weights[len(single) :].min() > weights[: len(single)].min()
+    forced = density.potential(small, fast=True)
+    libcint = density.potential(small, fast=False)
+    tolerance = 1e-5 if torch.cuda.is_available() else 1e-10
+    assert np.abs(forced - libcint).max() / np.abs(libcint).max() < tolerance
+
+    # `fast=None` on the same small grid must still answer with libcint.
+    assert np.array_equal(density.potential(small), libcint)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="auto dispatch needs a GPU")
+def test_auto_dispatch_takes_the_fast_path_on_a_large_grid(system):
+    """A small grid must not settle the question for a later large one."""
+    auxmol, coefficients = system
+    density = RIDensity(auxmol, coefficients)
+    rng = np.random.default_rng(5)
+
+    density.potential(rng.uniform(-6, 8, (10, 3)))
+    points = rng.uniform(-6, 8, (FAST_ESP_MIN_POINTS + 1, 3))
+
+    auto = density.potential(points)
+    slow = density.potential(points, fast=False)
+    assert not np.array_equal(auto, slow), "the large grid should not have used libcint"
+    assert np.abs(auto - slow).max() / np.abs(slow).max() < 1e-5

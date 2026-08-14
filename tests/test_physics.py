@@ -12,7 +12,7 @@ import pytest
 from pyscf import gto, scf
 
 from qpet import BOHR_TO_ANG, DMDensity
-from qpet.fields import _DIST_FLOOR, _nuclear_potential
+from qpet.fields import _DIST_FLOOR, nuclear_potential
 
 
 @pytest.fixture(scope="module")
@@ -82,7 +82,7 @@ def test_dm_matches_pyscf_int1e_grids(water_dm):
     pts_bohr = pts_ang / BOHR_TO_ANG
 
     v_total = rho.potential(pts_ang)
-    v_nuc = _nuclear_potential(mol.atom_coords(), rho.atomic_numbers, pts_bohr)
+    v_nuc = nuclear_potential(mol.atom_coords(), rho.atomic_numbers, pts_bohr)
     v_ele_calc = v_nuc - v_total  # recovered electronic contribution
 
     ints = mol.intor("int1e_grids", grids=pts_bohr)
@@ -100,6 +100,6 @@ def test_nuclear_singularity_is_clamped():
     charges = np.array([8])  # oxygen
     pts_bohr = np.array([[0.001, 0.0, 0.0]])  # inside floor
 
-    v = _nuclear_potential(positions_bohr, charges, pts_bohr)
+    v = nuclear_potential(positions_bohr, charges, pts_bohr)
     assert np.isfinite(v[0])
     assert v[0] <= 8 / _DIST_FLOOR + 1e-12
