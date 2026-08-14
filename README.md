@@ -10,8 +10,17 @@ grids, multipoles, CUBE export, and SCF initial guesses.
 
 ## What it provides
 
-- **`DensityModel`** — wraps a metatomic model; `predict(mol)` returns an
-  `RIDensity`.
+- **`DensityModel`** — wraps a model; `predict(mol)` returns an `RIDensity`.
+  Two inference backends behind one class: `"metatomic"` runs the exported
+  model through metatensor, `"petfast"` runs the same weights through an
+  inference-only reimplementation that is several times faster and holds far
+  larger systems. `backend="auto"` (the default) picks the fast one for a
+  `.petfast` artifact.
+- **`FastESP`** — the electrostatic potential in closed form on the GPU,
+  replacing the per-(function, point) libcint call behind `RIDensity.potential`
+  with a handful of floating-point operations. `RIDensity.potential` uses it
+  automatically on a GPU once the grid is large enough to repay building it;
+  `fast=True`/`False` overrides that.
 - **Density value objects** — `RIDensity` (from RI coefficients, with
   `density`, `potential`, `charge`, `dipole`, `quadrupole`, `select_atoms`,
   `normalize_charge`, `constrain_dipole`, `scf_guess`) and `DMDensity` (from an
@@ -37,6 +46,13 @@ rho.dipole(origin)                     # multipoles from RI coefficients
 rho.scf_guess(mol, xc="pbe")           # dm0 for mf.kernel(dm0=...)
 
 model_provenance("model.pt")           # sha256 + versions, for the output file
+```
+
+The same call runs the fast backend; the head comes from the artifact, and
+everything downstream of `predict` is unchanged:
+
+```python
+model = DensityModel("model.petfast", aux_basis="def2-universal-jfit")
 ```
 
 ## Installation

@@ -1,4 +1,17 @@
-"""Metatomic model wrapper: predict RI densities from geometries.
+"""Model wrapper: predict RI densities from geometries.
+
+One class, :class:`DensityModel`, over two inference backends:
+
+* ``"metatomic"`` — the exported metatomic model, run through metatensor with
+  vesin neighbor lists. The reference path, and the one that supports the dipole
+  constraint and oracle-charge conditioning.
+* ``"petfast"`` — an inference-only reimplementation of the same network that
+  skips metatensor entirely, returning coefficients already in PySCF order. It
+  is faster and holds larger systems, and is numerically equivalent up to float
+  round-off.
+
+The backend changes only how coefficients are produced; everything after that is
+shared.
 
 This module owns every metatomic / metatensor / torch / vesin touchpoint in
 qpet — model loading, neighbor lists, forward passes, and the conversion from
@@ -8,13 +21,18 @@ outside this file as a design error.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from pyscf import gto
 
 from qpet.basis import make_auxmol
-from qpet.conversions import attach_conditioning, pyscf_to_system, system_to_pyscf
+from qpet.conversions import (
+    BOHR_TO_ANG,
+    attach_conditioning,
+    pyscf_to_system,
+    system_to_pyscf,
+)
 from qpet.fields import RIDensity
 from qpet.moments import (
     apply_dipole_correction,
@@ -26,6 +44,9 @@ if TYPE_CHECKING:
     import torch
     from metatensor.torch import TensorMap
     from metatomic.torch import AtomisticModel, System
+
+#: Backends :class:`DensityModel` can run.
+BACKENDS = ("metatomic", "petfast")
 
 
 def _tensormap_to_pyscf_coefficients(
@@ -122,18 +143,57 @@ def _tensormap_to_pyscf_coefficients(
     return [res.detach().cpu().numpy() for res in result_tuple]
 
 
+def _require_petfast() -> Any:
+    try:
+        import petfast
+    except ImportError as error:  # pragma: no cover - depends on the environment
+        raise ImportError(
+            "backend='petfast' needs the petfast package, and a '.petfast' "
+            "artifact built from a metatrain checkpoint with "
+            "petfast.export.export_checkpoint."
+        ) from error
+    return petfast
+
+
+def _resolve_backend(backend: str, model: Any) -> str:
+    """Which backend a ``(backend, model)`` pair asks for.
+
+    ``"auto"`` reads it off the model: a ``.petfast`` artifact path or a ready
+    ``petfast.Calculator`` means the fast path, anything else the metatomic one.
+    """
+    if backend != "auto":
+        if backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown backend {backend!r}. Use 'auto' or one of {BACKENDS}."
+            )
+        return backend
+    if isinstance(model, str) and model.endswith(".petfast"):
+        return "petfast"
+    if type(model).__module__.split(".")[0] == "petfast":
+        return "petfast"
+    return "metatomic"
+
+
 class DensityModel:
     """
-    Metatomic ML density model predicting :class:`~qpet.fields.RIDensity`.
+    ML density model predicting :class:`~qpet.fields.RIDensity`.
+
+    Runs either inference backend (see the module docstring); ``backend="auto"``
+    picks ``"petfast"`` for a ``.petfast`` artifact or a ready
+    ``petfast.Calculator``, and ``"metatomic"`` otherwise. Both accept the same
+    :meth:`predict` / :meth:`predict_systems` calls and return the same objects.
 
     When constructed with a ``dict`` of pre-evaluated TensorMaps (one model
     forward pass feeding several consumers), no forward pass is performed —
-    the relevant heads are read from the dict.
+    the relevant heads are read from the dict. Metatomic backend only.
 
-    :param model: Pre-loaded metatomic model or path to a ``.pt`` file, or a
-        ``dict`` of pre-evaluated TensorMaps from a previous forward pass.
+    :param model: Pre-loaded metatomic model, path to a ``.pt`` file, or a
+        ``dict`` of pre-evaluated TensorMaps from a previous forward pass; for
+        the petfast backend, a path to a ``.petfast`` artifact or a ready
+        ``petfast.Calculator``.
     :param head: Name of the density head in the model output
-        (e.g. ``"mtt::rho_c_jfit_coulomb"``).
+        (e.g. ``"mtt::rho_c_jfit_coulomb"``). Required by the metatomic
+        backend; a petfast artifact carries its own head and ignores this.
     :param aux_basis: Auxiliary basis the model was trained on: a PySCF basis
         set name (e.g. ``"def2-universal-jfit"``) or an even-tempered
         specification ``"etb:<ao_basis>:<beta>"`` (e.g. ``"etb:def2-svp:2.0"``),
@@ -143,6 +203,7 @@ class DensityModel:
         caller's ``Mole`` as-is.
     :param device: Torch device (default ``"cpu"``).
     :param dtype: Torch dtype (default ``torch.float32``).
+    :param backend: ``"auto"`` (default), ``"metatomic"`` or ``"petfast"``.
     :param normalize_charge: If True, shift s-channel coefficients so each
         predicted density integrates to the exact electron count. With
         :meth:`predict_systems` this needs ``ecp`` set for ECP elements,
@@ -157,9 +218,19 @@ class DensityModel:
         models trained without the conditioning; required to get the
         conditioned accuracy from models trained with it.
     :param constrain_dipole: If True, apply a charge-neutral correction so
-        the electric dipole matches the model-predicted value.
+        the electric dipole matches the model-predicted value. Metatomic
+        backend only.
     :param dipole_head: Name of the dipole output in the model (only used
         when ``constrain_dipole=True``).
+    :param max_atoms_per_pass: petfast backend only. Above this many atoms,
+        evaluate with petfast's spatial partitioning instead of in one pass.
+        Partitioning is exact but processes each block's halo as well as its
+        core, so it is worth using only when a system does not fit; ``None``
+        never partitions.
+    :param backend_options: petfast backend only; forwarded to
+        ``petfast.Calculator`` — e.g. ``autocast_dtype`` or ``compile``. Note
+        that float16 measures a few percent relative error on density
+        coefficients, which is unlikely to be acceptable here.
 
     Example::
 
@@ -172,27 +243,40 @@ class DensityModel:
         )
         rho = model.predict(mol)
         v = rho.potential(points)  # or density(pts), dipole(), scf_guess(mol)
+
+        # Same call, the fast backend; the head comes from the artifact.
+        fast = DensityModel("density_model.petfast", aux_basis="def2-universal-jfit")
     """
 
     def __init__(
         self,
-        model: str | torch.nn.Module | dict,  # type: ignore[type-arg]  # noqa: F821
-        head: str,
-        aux_basis: str,
+        model: str | torch.nn.Module | dict | Any,  # type: ignore[type-arg]  # noqa: F821
+        head: str | None = None,
+        aux_basis: str | None = None,
         basis: str | None = None,
         device: str = "cpu",
         dtype: torch.dtype | None = None,  # noqa: F821
         *,
+        backend: str = "auto",
         normalize_charge: bool = False,
         constrain_dipole: bool = False,
         oracle_charges: bool = False,
         dipole_head: str = "mtt::electric_dipole",
         ecp: str | None = None,
+        max_atoms_per_pass: int | None = 150_000,
+        **backend_options: Any,
     ) -> None:
         import torch
 
+        if aux_basis is None:
+            raise ValueError(
+                "DensityModel needs 'aux_basis': the auxiliary basis the model "
+                "was trained on, e.g. 'def2-universal-jfit'."
+            )
         if dtype is None:
             dtype = torch.float32
+
+        self.backend = _resolve_backend(backend, model)
 
         self._model = model
         self._head = head
@@ -206,9 +290,28 @@ class DensityModel:
         self.constrain_dipole = constrain_dipole
         self.oracle_charges = oracle_charges
         self.dipole_head = dipole_head
+        self.max_atoms_per_pass = max_atoms_per_pass
+
+        self._loaded_model: AtomisticModel | None = None
+        self._calculator: Any = None
+
+        if self.backend == "petfast":
+            self._init_petfast(model, device, dtype, backend_options)
+            return
+
+        if head is None:
+            raise ValueError(
+                "the metatomic backend needs 'head': the name of the density "
+                "output, e.g. 'mtt::rho_c_jfit_coulomb'."
+            )
+        if backend_options:
+            raise TypeError(
+                f"unexpected keyword argument(s) {sorted(backend_options)} for the "
+                "metatomic backend; these are forwarded to petfast.Calculator and "
+                "apply only to backend='petfast'."
+            )
 
         # Model-level setup only needed when model is not pre-evaluated.
-        self._loaded_model: AtomisticModel | None
         if isinstance(model, dict):
             self._nl_calculators = []
             self._options = None
@@ -247,6 +350,44 @@ class DensityModel:
             for options in self._neighbor_list_options
         ]
 
+    def _init_petfast(
+        self,
+        model: Any,
+        device: str,
+        dtype: torch.dtype,  # noqa: F821
+        options: dict[str, Any],
+    ) -> None:
+        """Set up the petfast backend: load the artifact, or adopt a Calculator."""
+        if self.constrain_dipole:
+            raise ValueError(
+                "constrain_dipole is a metatomic-backend feature: the petfast "
+                "artifact carries only the density head, so there is no dipole "
+                "output to constrain against."
+            )
+        if self.oracle_charges:
+            raise ValueError(
+                "oracle_charges is a metatomic-backend feature; petfast reads its "
+                "conditioning from charge and spin multiplicity directly."
+            )
+        if isinstance(model, dict):
+            raise TypeError(
+                "backend='petfast' cannot take pre-evaluated TensorMaps; pass a "
+                "'.petfast' artifact path or a petfast.Calculator."
+            )
+
+        petfast = _require_petfast()
+        if isinstance(model, str):
+            self._calculator = petfast.Calculator(
+                model, device=device, dtype=dtype, **options
+            )
+        else:
+            if options:
+                raise TypeError(
+                    f"unexpected keyword argument(s) {sorted(options)}: they are "
+                    "forwarded to petfast.Calculator, which is already built."
+                )
+            self._calculator = model
+
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
@@ -264,10 +405,16 @@ class DensityModel:
         """
         single = isinstance(mols, gto.Mole)
         mol_list: list[gto.Mole] = [mols] if single else list(mols)
-        systems = [
-            pyscf_to_system(mol, dtype=self._dtype, device=self._device)
-            for mol in mol_list
-        ]
+        # petfast reads the geometry off the Mole, so the System conversion is
+        # skipped rather than built and thrown away.
+        systems = (
+            []
+            if self.backend == "petfast"
+            else [
+                pyscf_to_system(mol, dtype=self._dtype, device=self._device)
+                for mol in mol_list
+            ]
+        )
         densities = self._predict(systems, mol_list)
         return densities[0] if single else densities
 
@@ -316,17 +463,23 @@ class DensityModel:
     # ------------------------------------------------------------------ #
 
     def _predict(self, systems: list[System], mols: list[gto.Mole]) -> list[RIDensity]:
-        """Shared prediction path: forward pass, conversion, corrections."""
+        """Shared prediction path: coefficients from the backend, then corrections."""
         auxmols = [make_auxmol(mol, self.aux_basis) for mol in mols]
-        if self.oracle_charges:
-            # Same GFN2 computation metatrain runs at training time; a failed
-            # oracle leaves the field absent and the model runs oracle-free.
-            from .conversions import attach_oracle_charges
 
-            for system, mol in zip(systems, mols, strict=True):
-                attach_oracle_charges(system, mol.charge, mol.spin + 1)
-        outputs = self._evaluate(systems)
-        coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
+        outputs: dict[str, TensorMap] = {}
+        if self.backend == "petfast":
+            coeffs_list = [self._petfast_coefficients(mol) for mol in mols]
+        else:
+            if self.oracle_charges:
+                # Same GFN2 computation metatrain runs at training time; a failed
+                # oracle leaves the field absent and the model runs oracle-free.
+                from .conversions import attach_oracle_charges
+
+                for system, mol in zip(systems, mols, strict=True):
+                    attach_oracle_charges(system, mol.charge, mol.spin + 1)
+            assert self._head is not None  # the constructor rejects a bare head
+            outputs = self._evaluate(systems)
+            coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
 
         if self.normalize_charge:
             coeffs_list = [
@@ -359,6 +512,44 @@ class DensityModel:
                 )
             densities.append(RIDensity(auxmol, coeffs))
         return densities
+
+    def _petfast_coefficients(self, mol: gto.Mole) -> np.ndarray:
+        """One molecule through petfast, in PySCF auxiliary-basis order.
+
+        The same extraction the metatomic path sees — positions in angstrom and
+        the per-atom charges PySCF reports — so the two backends are fed
+        identical inputs.
+        """
+        import torch
+
+        positions = torch.tensor(
+            mol.atom_coords() * BOHR_TO_ANG, dtype=self._dtype, device=self._device
+        )
+        types = torch.tensor(
+            [mol.atom_charge(i) for i in range(mol.natm)],
+            dtype=torch.int32,
+            device=self._device,
+        )
+        # PySCF stores spin as the number of unpaired electrons; the model was
+        # conditioned on the multiplicity.
+        conditioning = {
+            "charge": int(mol.charge),
+            "spin_multiplicity": int(mol.spin) + 1,
+        }
+
+        partition = (
+            self.max_atoms_per_pass is not None
+            and positions.shape[0] > self.max_atoms_per_pass
+        )
+        compute = (
+            self._calculator.compute_partitioned
+            if partition
+            else self._calculator.compute
+        )
+        coefficients, _ = compute(positions, types, **conditioning)
+        return np.asarray(
+            coefficients.detach().cpu().to(torch.float64).numpy(), dtype=float
+        )
 
     def _evaluate(self, systems: list[System]) -> dict[str, TensorMap]:
         """Run a single forward pass (or return the pre-evaluated dict)."""
