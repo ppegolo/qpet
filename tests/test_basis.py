@@ -50,9 +50,14 @@ def test_etb_auxmol_matches_aug_etb(water):
     aux = make_auxmol(water, "etb:def2-svp:2.0")
     ref = df.addons.make_auxmol(water, df.aug_etb(water, beta=2.0))
 
+    # Compared through the basis as PySCF exposes it: the row order of
+    # `_bas`/`_env` follows a set iteration in `df.aug_etb`, so it is not stable.
     assert aux.nao == ref.nao
-    assert np.array_equal(aux._bas, ref._bas)
-    assert np.allclose(aux._env, ref._env)
+    assert aux.ao_labels() == ref.ao_labels()
+    assert np.array_equal(aux.aoslice_by_atom(), ref.aoslice_by_atom())
+    # The overlap matrix is the basis itself, in the AO ordering the coefficients
+    # are indexed by: if a shell were off by one, this could not match.
+    assert np.allclose(aux.intor("int1e_ovlp"), ref.intor("int1e_ovlp"))
 
 
 def test_etb_basis_follows_the_spec_not_the_molecule():
