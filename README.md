@@ -15,12 +15,11 @@ grids, multipoles, CUBE export, and SCF initial guesses.
   model through metatensor, `"petfast"` runs the same weights through an
   inference-only reimplementation that is several times faster and holds far
   larger systems. `backend="auto"` (the default) picks the fast one for a
-  `.petfast` artifact.
-- **`FastESP`** — the electrostatic potential in closed form on the GPU,
-  replacing the per-(function, point) libcint call behind `RIDensity.potential`
-  with a handful of floating-point operations. `RIDensity.potential` uses it
-  automatically on a GPU once the grid is large enough to repay building it;
-  `fast=True`/`False` overrides that.
+  `.petfast` artifact. Predictions are projected to the expected electron
+  count by default; `normalize_charge=False` returns the raw model output.
+- **`FastESP`** — the electrostatic potential in closed form on the GPU.
+  `RIDensity.potential` uses it automatically on a GPU once the grid is large
+  enough to repay building it; `fast=True`/`False` overrides that.
 - **Density value objects** — `RIDensity` (from RI coefficients, with
   `density`, `potential`, `charge`, `dipole`, `quadrupole`, `select_atoms`,
   `normalize_charge`, `constrain_dipole`, `scf_guess`) and `DMDensity` (from an
@@ -39,7 +38,7 @@ from qpet import DensityModel, model_provenance
 
 model = DensityModel("model.pt", head="mtt::rho_c_jfit_coulomb",
                      aux_basis="def2-universal-jfit")
-rho = model.predict(mol).normalize_charge()
+rho = model.predict(mol)               # charge-normalised by default
 
 rho.potential(points)                  # ESP in a.u., points in Angstrom
 rho.dipole(origin)                     # multipoles from RI coefficients

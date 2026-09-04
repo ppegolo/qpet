@@ -91,4 +91,7 @@ def test_matches_metatomic_backend(exports):
             error = np.abs(fast.coeffs - reference.coeffs).max() / scale
             assert error < 1e-12, f"{mol.atom}, normalize={normalize}: {error:.2e}"
             if normalize:
-                assert abs(fast.charge() + mol.nelectron) < 1e-6
+                from qpet import DEFAULT_CHARGE_OFFSET
+
+                target = mol.nelectron + DEFAULT_CHARGE_OFFSET
+                assert abs(fast.charge() + target) < 1e-6

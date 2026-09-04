@@ -263,6 +263,7 @@ def build_mole(
     charge: int = 0,
     spin: int | None = None,
     verbose: int = 0,
+    ecp: str | None = None,
 ) -> gto.Mole:
     """
     Build a PySCF ``Mole`` from element symbols and positions.
@@ -274,6 +275,10 @@ def build_mole(
     :param spin: Number of unpaired electrons (2S). Defaults to the low-spin
         value from :func:`qpet.spin_from_parity`.
     :param verbose: PySCF verbosity.
+    :param ecp: Effective core potential name. Required for elements whose
+        basis is defined against one (def2 for Rb and heavier): without it the
+        ``Mole`` is all-electron and its electron count is ``Z`` rather than
+        ``Z_eff``.
     :return: A built ``Mole`` with coordinates in Angstrom.
     """
     from .conditioning import spin_from_parity
@@ -291,6 +296,7 @@ def build_mole(
         charge=charge,
         spin=spin,
         verbose=verbose,
+        ecp=ecp,
     )
     return mole
 

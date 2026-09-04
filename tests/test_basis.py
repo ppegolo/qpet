@@ -105,3 +105,10 @@ def test_select_atoms_on_an_etb_density(water_etb):
     pts = rng.uniform(-4.0, 4.0, size=(50, 3))
     parts = oxygen.potential(pts) + hydrogens.potential(pts)
     assert np.max(np.abs(parts - water_etb.potential(pts))) < 1e-12
+
+
+def test_auxmol_keeps_the_effective_nuclei(hydrogen_iodide_ri):
+    """``make_auxmol`` hands back the nuclei of the orbital molecule, ECP included."""
+    mol, _, auxmol, _ = hydrogen_iodide_ri
+    assert auxmol.atom_charges().tolist() == mol.atom_charges().tolist() == [25, 1]
+    assert auxmol.nelectron == mol.nelectron == 26

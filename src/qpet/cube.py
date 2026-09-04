@@ -277,6 +277,9 @@ def write_cube(
     axes_bohr = np.asarray(axes_bohr, dtype=float).reshape(3, 3)
 
     z = atoms.atomic_numbers
+    # CUBE atom lines carry the element and the nuclear charge separately;
+    # under an ECP the two differ.
+    q = getattr(atoms, "nuclear_charges", z)
     pos_bohr = atoms.positions / BOHR_TO_ANG
     natoms = len(z)
 
@@ -290,9 +293,9 @@ def write_cube(
         )
         for n, ax in zip((nx, ny, nz), axes_bohr, strict=True):
             f.write(f"{n:5d} {ax[0]:12.6f} {ax[1]:12.6f} {ax[2]:12.6f}\n")
-        for zi, ri in zip(z, pos_bohr, strict=True):
+        for zi, qi, ri in zip(z, q, pos_bohr, strict=True):
             f.write(
-                f"{int(zi):5d} {float(zi):12.6f} {ri[0]:12.6f} "
+                f"{int(zi):5d} {float(qi):12.6f} {ri[0]:12.6f} "
                 f"{ri[1]:12.6f} {ri[2]:12.6f}\n"
             )
 

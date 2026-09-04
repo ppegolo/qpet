@@ -21,12 +21,14 @@ outside this file as a design error.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from pyscf import gto
 
 from qpet.basis import make_auxmol
+from qpet.conditioning import FIRST_ECP_ELEMENT, electron_count, nuclear_charges_of
 from qpet.conversions import (
     BOHR_TO_ANG,
     attach_conditioning,
@@ -35,6 +37,7 @@ from qpet.conversions import (
 )
 from qpet.fields import RIDensity
 from qpet.moments import (
+    DEFAULT_CHARGE_OFFSET,
     apply_dipole_correction,
     get_ri_dipole,
     normalize_charge_additive,
@@ -47,6 +50,38 @@ if TYPE_CHECKING:
 
 #: Backends :class:`DensityModel` can run.
 BACKENDS = ("metatomic", "petfast")
+
+
+def _warn_if_ecp_is_missing(mols: list[gto.Mole], ecp: str | None) -> None:
+    """Warn when a heavy element is being treated all-electron by accident."""
+    if ecp:
+        return
+    heavy = sorted(
+        {
+            mol.atom_symbol(i)
+            for mol in mols
+            for i in range(mol.natm)
+            if gto.charge(mol.atom_symbol(i)) >= FIRST_ECP_ELEMENT
+        }
+    )
+    if not heavy:
+        return
+    warnings.warn(
+        f"no 'ecp' set but the system contains {', '.join(heavy)}: the molecule "
+        f"is built all-electron, so its electron count is Z rather than Z_eff. "
+        f"Pass the ECP of the training data, e.g. ecp='def2-tzvp'.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def _system_label(mol: gto.Mole, index: int) -> str:
+    """Short, printable name of a molecule for warnings."""
+    from collections import Counter
+
+    counts = Counter(mol.atom_symbol(i) for i in range(mol.natm))
+    formula = "".join(f"{s}{n}" for s, n in sorted(counts.items()))
+    return f"system {index} ({formula}, charge {mol.charge:+d})"
 
 
 def _tensormap_to_pyscf_coefficients(
@@ -204,10 +239,27 @@ class DensityModel:
     :param device: Torch device (default ``"cpu"``).
     :param dtype: Torch dtype (default ``torch.float32``).
     :param backend: ``"auto"`` (default), ``"metatomic"`` or ``"petfast"``.
-    :param normalize_charge: If True, shift s-channel coefficients so each
-        predicted density integrates to the exact electron count. With
+    :param normalize_charge: Shift the coefficients so each predicted density
+        integrates to the expected electron count (default True). The model is
+        not charge-conserving; on the pocket validation set this projection
+        alone removes 31% of the interface-ESP RMSE with nothing learned. Pass
+        ``normalize_charge=False`` for the raw model output. With
         :meth:`predict_systems` this needs ``ecp`` set for ECP elements,
         otherwise the target count is Z rather than Z_eff.
+    :param charge_metric: Metric of the charge correction, ``"coulomb"``
+        (default; minimum Coulomb self-energy, spreads the missing charge over
+        the diffuse functions and repairs the surface potential) or
+        ``"identity"`` (s-channel shift only). See
+        :func:`qpet.moments.normalize_charge_additive`.
+    :param charge_offset: Added to the electron count to form the target
+        (default :data:`qpet.moments.DEFAULT_CHARGE_OFFSET`). The reference RI
+        fits are unconstrained and integrate to slightly more than the exact
+        count; this is the mean of that basis-incompleteness offset, so the
+        target is what a perfect model of the *reference* would predict.
+    :param charge_guard: Skip the projection (with a warning naming the
+        system) when it would move more than this many electrons, default
+        0.5 e. Such a gap is an unknown element, not fitting noise, and
+        spreading it over the basis would make things worse.
     :param ecp: Effective core potential name used to build molecules in
         :meth:`predict_systems`; unused by :meth:`predict`, which takes the
         caller's ``Mole`` as-is. Set it whenever ``basis`` implies an ECP
@@ -258,7 +310,10 @@ class DensityModel:
         dtype: torch.dtype | None = None,  # noqa: F821
         *,
         backend: str = "auto",
-        normalize_charge: bool = False,
+        normalize_charge: bool = True,
+        charge_metric: str = "coulomb",
+        charge_offset: float = DEFAULT_CHARGE_OFFSET,
+        charge_guard: float | None = 0.5,
         constrain_dipole: bool = False,
         oracle_charges: bool = False,
         dipole_head: str = "mtt::electric_dipole",
@@ -287,6 +342,13 @@ class DensityModel:
         self.basis = basis
         self.ecp = ecp
         self.normalize_charge = normalize_charge
+        if charge_metric not in ("identity", "coulomb"):
+            raise ValueError(
+                f"Unknown charge_metric {charge_metric!r}. Use 'identity' or 'coulomb'."
+            )
+        self.charge_metric = charge_metric
+        self.charge_offset = float(charge_offset)
+        self.charge_guard = charge_guard
         self.constrain_dipole = constrain_dipole
         self.oracle_charges = oracle_charges
         self.dipole_head = dipole_head
@@ -451,6 +513,7 @@ class DensityModel:
             )
             for system in systems
         ]
+        _warn_if_ecp_is_missing(mols, self.ecp)
         # A charge-conditioned model reads these off the System, so the caller's
         # `charge`/`spin` have to travel with it and not only with the Mole.
         # Data the caller already attached wins.
@@ -483,8 +546,17 @@ class DensityModel:
 
         if self.normalize_charge:
             coeffs_list = [
-                normalize_charge_additive(auxmol, coeffs, mol.nelectron)
-                for mol, auxmol, coeffs in zip(mols, auxmols, coeffs_list, strict=True)
+                normalize_charge_additive(
+                    auxmol,
+                    coeffs,
+                    electron_count(mol) + self.charge_offset,
+                    metric=self.charge_metric,
+                    max_shift=self.charge_guard,
+                    label=_system_label(mol, index),
+                )
+                for index, (mol, auxmol, coeffs) in enumerate(
+                    zip(mols, auxmols, coeffs_list, strict=True)
+                )
             ]
 
         if self.constrain_dipole:
@@ -583,7 +655,7 @@ class DensityModel:
 
         targets = []
         for dipole_total, mol in zip(dipoles_cart, mols, strict=True):
-            z = mol.atom_charges().astype(float)
+            z = nuclear_charges_of(mol).astype(float)
             coords = mol.atom_coords()  # Bohr
             R_cnc = z @ coords / z.sum()  # centre of nuclear charge
             mu_nuc_0 = z @ coords
@@ -596,7 +668,7 @@ class DensityModel:
         auxmol: gto.Mole, coeffs: np.ndarray, mu_el_target: np.ndarray
     ) -> np.ndarray:
         """Charge-neutral correction moving the dipole to ``mu_el_target``."""
-        z = auxmol.atom_charges().astype(float)
+        z = nuclear_charges_of(auxmol).astype(float)
         R_cnc = z @ auxmol.atom_coords() / z.sum()  # Bohr
         delta_mu = mu_el_target - get_ri_dipole(auxmol, coeffs, R_cnc)
         return apply_dipole_correction(auxmol, coeffs, delta_mu)

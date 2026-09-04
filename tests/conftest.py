@@ -27,3 +27,26 @@ def water_ri():
     dm = scf.RHF(mol).run(verbose=0).make_rdm1()
     rho = RIDensity.from_dm(mol, dm, "def2-svp-jkfit")
     return mol, dm, rho.auxmol, rho.coeffs
+
+
+@pytest.fixture(scope="session")
+def hydrogen_iodide_ri():
+    """
+    HI RHF/def2-svp with the def2 ECP on iodine, RI-fitted onto
+    def2-universal-jfit.
+
+    Iodine keeps 25 of its 53 electrons: the fixture for everything that must
+    tell the element (``Z = 53``) from the nucleus the density sees
+    (``Z_eff = 25``).
+
+    Returns ``(mol, dm, auxmol, coeffs)``.
+    """
+    mol = gto.M(
+        atom="I 0 0 0; H 0 0 1.61",
+        basis="def2-svp",
+        ecp="def2-svp",
+        verbose=0,
+    )
+    dm = scf.RHF(mol).run(verbose=0).make_rdm1()
+    rho = RIDensity.from_dm(mol, dm, "def2-universal-jfit")
+    return mol, dm, rho.auxmol, rho.coeffs

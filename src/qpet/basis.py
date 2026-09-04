@@ -11,6 +11,7 @@ auxiliary basis can be evaluated with the same string it was trained with.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import cache
 
 from pyscf import df, gto
@@ -88,10 +89,26 @@ def make_auxmol(mol: gto.Mole, aux_basis: str) -> gto.Mole:
     """
     Build the auxiliary ``Mole`` for ``mol``, ETB specifications included.
 
-    Drop-in replacement for ``pyscf.df.addons.make_auxmol``.
+    Drop-in replacement for ``pyscf.df.addons.make_auxmol`` that keeps the
+    nuclei of ``mol``: PySCF rebuilds the atom table without the ECP, so its
+    auxiliary ``Mole`` reports full-``Z`` nuclear charges (and electron count)
+    for elements whose cores the calculation never had. Here the effective
+    charges and nuclear model of ``mol`` are copied over, so
+    ``auxmol.atom_charges()``, ``auxmol.nelectron`` and every nuclear term
+    built from them agree with the orbital molecule.
 
     :param mol: Built ``Mole`` (orbital basis).
     :param aux_basis: Auxiliary basis name or ``"etb:<ao_basis>:<beta>"``.
     :return: Auxiliary-basis ``Mole``.
     """
-    return df.addons.make_auxmol(mol, resolve_aux_basis(aux_basis, mol))
+    auxmol = df.addons.make_auxmol(mol, resolve_aux_basis(aux_basis, mol))
+    return copy_nuclei(mol, auxmol)
+
+
+def copy_nuclei(
+    source: gto.Mole, target: gto.Mole, atoms: Sequence[int] | slice = slice(None)
+) -> gto.Mole:
+    """Give ``target`` the effective nuclear charges and nuclear model of ``atoms``."""
+    for column in (gto.mole.CHARGE_OF, gto.mole.NUC_MOD_OF):
+        target._atm[:, column] = source._atm[atoms, column]
+    return target

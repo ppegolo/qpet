@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from pyscf import df, gto
 
-from qpet.basis import make_auxmol
+from qpet.basis import copy_nuclei, make_auxmol
+from qpet.conditioning import atomic_numbers_of, nuclear_charges_of
 from qpet.conversions import BOHR_TO_ANG
 
 if TYPE_CHECKING:
@@ -54,7 +55,9 @@ def nuclear_potential(
     regardless of grid size or atom count.
 
     :param positions_bohr: Nuclear positions in Bohr, shape (N_atoms, 3)
-    :param charges: Nuclear charges (atomic numbers), shape (N_atoms,)
+    :param charges: Effective nuclear charges, shape (N_atoms,): ``Z`` for an
+        all-electron atom, ``Z - n_core`` under an ECP (see
+        :func:`qpet.nuclear_charges_of`)
     :param pts_bohr: Evaluation points in Bohr, shape (N_pts, 3)
     :param max_chunk_elements: Target size (in elements) of the
         ``(pts_chunk, N_atoms)`` distance matrix per batch
@@ -87,7 +90,12 @@ class ScalarField(Protocol):
 
     @property
     def atomic_numbers(self) -> np.ndarray:
-        """Atomic numbers, shape (N,)."""
+        """Atomic numbers (element identity ``Z``), shape (N,)."""
+        ...
+
+    @property
+    def nuclear_charges(self) -> np.ndarray:
+        """Effective nuclear charges (``Z`` minus ECP core electrons), shape (N,)."""
         ...
 
     def density(self, pts: np.ndarray, batch_size: int = ...) -> np.ndarray:
@@ -137,8 +145,13 @@ class DMDensity:
 
     @property
     def atomic_numbers(self) -> np.ndarray:
-        """Atomic numbers, shape (N,)."""
-        return self.mol.atom_charges()
+        """Atomic numbers (element identity ``Z``), shape (N,)."""
+        return atomic_numbers_of(self.mol)
+
+    @property
+    def nuclear_charges(self) -> np.ndarray:
+        """Effective nuclear charges (``Z`` minus ECP core electrons), shape (N,)."""
+        return nuclear_charges_of(self.mol)
 
     def density(self, pts: np.ndarray, batch_size: int = 5000) -> np.ndarray:
         """
@@ -167,7 +180,9 @@ class DMDensity:
         :return: Electrostatic potential in atomic units, shape (N,)
         """
         pts_bohr = pts / BOHR_TO_ANG
-        v_nuc = nuclear_potential(self.mol.atom_coords(), self.atomic_numbers, pts_bohr)
+        v_nuc = nuclear_potential(
+            self.mol.atom_coords(), self.nuclear_charges, pts_bohr
+        )
         v_ele = np.zeros(len(pts_bohr))
         for p0 in range(0, len(pts_bohr), batch_size):
             p1 = min(p0 + batch_size, len(pts_bohr))
@@ -186,8 +201,9 @@ class RIDensity:
     ``ρ(r) = Σ_P c_P χ_P(r)`` with the geometry and basis carried by
     ``auxmol``. The electronic potential is ``V_ele(r) = Σ_P c_P (P|r)``.
 
-    :param auxmol: Auxiliary-basis ``Mole`` (e.g. from
-        ``pyscf.df.addons.make_auxmol``).
+    :param auxmol: Auxiliary-basis ``Mole`` from :func:`qpet.make_auxmol`
+        (PySCF's own ``make_auxmol`` drops the ECP from the nuclei, so an ECP
+        system built with it gets the wrong nuclear potential).
     :param coeffs: RI coefficients, shape (naux,).
 
     Example::
@@ -274,6 +290,8 @@ class RIDensity:
         sub.spin = int(sum(self.auxmol.atom_charge(a) for a in idx)) % 2
         sub.verbose = 0
         sub.build()
+        # build() reinstates full-Z nuclei; keep the parent's effective charges.
+        copy_nuclei(self.auxmol, sub, idx)
 
         return RIDensity(sub, self.coeffs[ao_keep])
 
@@ -284,8 +302,13 @@ class RIDensity:
 
     @property
     def atomic_numbers(self) -> np.ndarray:
-        """Atomic numbers, shape (N,)."""
-        return self.auxmol.atom_charges()
+        """Atomic numbers (element identity ``Z``), shape (N,)."""
+        return atomic_numbers_of(self.auxmol)
+
+    @property
+    def nuclear_charges(self) -> np.ndarray:
+        """Effective nuclear charges (``Z`` minus ECP core electrons), shape (N,)."""
+        return nuclear_charges_of(self.auxmol)
 
     def density(self, pts: np.ndarray, batch_size: int = 5000) -> np.ndarray:
         """
@@ -326,7 +349,7 @@ class RIDensity:
         """
         pts_bohr = pts / BOHR_TO_ANG
         v_nuc = nuclear_potential(
-            self.auxmol.atom_coords(), self.atomic_numbers, pts_bohr
+            self.auxmol.atom_coords(), self.nuclear_charges, pts_bohr
         )
 
         if fast is not False:
@@ -414,23 +437,44 @@ class RIDensity:
 
     # -- corrections (return new objects) --------------------------------- #
 
-    def normalize_charge(self, n_electrons: float | None = None) -> RIDensity:
+    def normalize_charge(
+        self,
+        n_electrons: float | None = None,
+        *,
+        metric: str = "identity",
+        max_shift: float | None = None,
+        label: str | None = None,
+    ) -> RIDensity:
         """
         Return a copy whose density integrates to the exact electron count.
 
-        Minimum-norm additive shift on the s-channel coefficients; l>0
-        (shape) channels are untouched.
+        Minimum-norm additive shift of the coefficients; see
+        :func:`qpet.moments.normalize_charge_additive` for the two metrics.
 
-        :param n_electrons: Target electron count; defaults to
-            ``auxmol.nelectron`` (charge- and ECP-aware).
+        :param n_electrons: Target electron count; defaults to the ECP-aware
+            count of the auxiliary molecule (:func:`qpet.electron_count`).
+        :param metric: ``"identity"`` (s-channel shift, shape channels
+            untouched) or ``"coulomb"`` (minimum Coulomb self-energy, the one
+            that repairs the potential at the molecular surface).
+        :param max_shift: Refuse (with a warning) to move more charge than
+            this; see :func:`qpet.moments.normalize_charge_additive`.
+        :param label: Name of the system for that warning.
         """
+        from qpet.conditioning import electron_count
         from qpet.moments import normalize_charge_additive
 
         if n_electrons is None:
-            n_electrons = self.auxmol.nelectron
+            n_electrons = electron_count(self.auxmol)
         return RIDensity(
             self.auxmol,
-            normalize_charge_additive(self.auxmol, self.coeffs, n_electrons),
+            normalize_charge_additive(
+                self.auxmol,
+                self.coeffs,
+                n_electrons,
+                metric=metric,
+                max_shift=max_shift,
+                label=label,
+            ),
         )
 
     def constrain_dipole(self, mu_target: np.ndarray) -> RIDensity:
@@ -442,7 +486,7 @@ class RIDensity:
         """
         from qpet.moments import apply_dipole_correction, get_ri_dipole
 
-        z = self.atomic_numbers.astype(float)
+        z = self.nuclear_charges.astype(float)
         r_cnc = z @ self.auxmol.atom_coords() / z.sum()
         delta_mu = np.asarray(mu_target) - get_ri_dipole(
             self.auxmol, self.coeffs, r_cnc

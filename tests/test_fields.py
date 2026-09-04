@@ -178,3 +178,48 @@ def test_select_atoms_validates_input(water_ri):
         rho.select_atoms([])
     with pytest.raises(IndexError, match="out of range"):
         rho.select_atoms([0, 3])
+
+
+class TestEffectiveCorePotential:
+    """
+    Under an ECP the nucleus the density sees carries ``Z - n_core``. A
+    nuclear term built from ``Z`` overshoots by ``n_core / r`` -- 28/r for
+    iodine, several Hartree at any surface point -- so the two field classes
+    must agree with each other and with the ECP calculation.
+    """
+
+    def test_element_and_nuclear_charge(self, hydrogen_iodide_ri):
+        mol, dm, auxmol, coeffs = hydrogen_iodide_ri
+        for rho in (DMDensity(mol, dm), RIDensity(auxmol, coeffs)):
+            assert rho.atomic_numbers.tolist() == [53, 1]
+            assert rho.nuclear_charges.tolist() == [25, 1]
+
+    def test_ri_potential_matches_dm_with_ecp(self, hydrogen_iodide_ri):
+        mol, dm, auxmol, coeffs = hydrogen_iodide_ri
+        rho_dm = DMDensity(mol, dm)
+        rho_ri = RIDensity(auxmol, coeffs)
+        rng = np.random.default_rng(1)
+        pts = rng.uniform(-4.0, 4.0, size=(60, 3)) + np.array([0.0, 0.0, 0.8])
+        v_dm = rho_dm.potential(pts)
+        v_ri = rho_ri.potential(pts, fast=False)
+        assert np.max(np.abs(v_dm - v_ri)) < 2e-2
+
+    def test_far_field_is_neutral(self, hydrogen_iodide_ri):
+        """A neutral molecule's potential decays; with 53/r it would not."""
+        _, _, auxmol, coeffs = hydrogen_iodide_ri
+        rho = RIDensity(auxmol, coeffs)
+        far = np.array([[30.0, 0.0, 0.0], [0.0, -30.0, 0.0], [0.0, 0.0, 40.0]])
+        assert np.max(np.abs(rho.potential(far, fast=False))) < 1e-3
+
+    def test_select_atoms_keeps_the_effective_nucleus(self, hydrogen_iodide_ri):
+        _, _, auxmol, coeffs = hydrogen_iodide_ri
+        rho = RIDensity(auxmol, coeffs)
+        iodine = rho.select_atoms([0])
+        assert iodine.atomic_numbers.tolist() == [53]
+        assert iodine.nuclear_charges.tolist() == [25]
+        pts = np.array([[3.0, 1.0, -2.0], [-2.0, 2.0, 4.0]])
+        total = rho.potential(pts, fast=False)
+        parts = iodine.potential(pts, fast=False) + rho.select_atoms([1]).potential(
+            pts, fast=False
+        )
+        assert np.allclose(total, parts, atol=1e-10)

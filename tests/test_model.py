@@ -10,6 +10,7 @@ dipole head is also required.
 
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
 
 import numpy as np
@@ -18,7 +19,13 @@ import torch
 from metatensor.torch import Labels, TensorBlock, TensorMap
 from pyscf import dft, gto
 
-from qpet import BOHR_TO_ANG, DensityModel, DMDensity, RIDensity
+from qpet import (
+    BOHR_TO_ANG,
+    DEFAULT_CHARGE_OFFSET,
+    DensityModel,
+    DMDensity,
+    RIDensity,
+)
 
 HEAD = "mtt::rho_c_jfit_coulomb"
 DIPOLE_HEAD = "mtt::electric_dipole"
@@ -182,7 +189,7 @@ def test_dict_mode_predict_roundtrip(water_ri, water_tensormap):
     """RI coefficients round-trip through dict-mode ``predict``."""
     mol, _, _, coeffs_ref = water_ri
 
-    rho = _dict_model(water_tensormap).predict(mol)
+    rho = _dict_model(water_tensormap, normalize_charge=False).predict(mol)
     assert isinstance(rho, RIDensity)
     np.testing.assert_allclose(rho.coeffs, coeffs_ref, atol=1e-10)
 
@@ -197,7 +204,9 @@ def test_dict_mode_density_matches_ri(water_ri, water_tensormap):
     pts = grid.coords * BOHR_TO_ANG
 
     rho_ref = RIDensity(auxmol, coeffs).density(pts)
-    rho_pred = _dict_model(water_tensormap).predict(mol).density(pts)
+    rho_pred = (
+        _dict_model(water_tensormap, normalize_charge=False).predict(mol).density(pts)
+    )
     np.testing.assert_allclose(rho_pred, rho_ref, atol=1e-8)
 
 
@@ -209,7 +218,9 @@ def test_dict_mode_potential_matches_dm(water_ri, water_tensormap):
     pts = rng.uniform(-4.0, 4.0, size=(30, 3))
 
     v_ref = DMDensity(mol, dm).potential(pts)
-    v_pred = _dict_model(water_tensormap).predict(mol).potential(pts)
+    v_pred = (
+        _dict_model(water_tensormap, normalize_charge=False).predict(mol).potential(pts)
+    )
     np.testing.assert_allclose(v_pred, v_ref, atol=2e-3)
 
 
@@ -234,7 +245,8 @@ def test_dict_mode_charge_normalization(water_ri):
 
     rho = _dict_model(tm, normalize_charge=True).predict(mol)
 
-    assert abs(float(rho.charge()) + mol.nelectron) < 1e-6
+    target = mol.nelectron + DEFAULT_CHARGE_OFFSET
+    assert abs(float(rho.charge()) + target) < 1e-6
     for b, snap in zip(tm.blocks(), snapshot, strict=True):
         assert torch.equal(b.values, snap), "caller TensorMap was mutated"
 
@@ -341,3 +353,49 @@ def test_model_mode_missing_capability_raises(water_tensormap):
             dtype=torch.float64,
             constrain_dipole=True,
         )
+
+
+def test_charge_projection_is_the_default(water_ri, water_tensormap):
+    """
+    A ``DensityModel`` normalizes the charge unless told not to.
+
+    The default target is the ECP-aware electron count plus the systematic
+    offset of the reference RI fits, in the Coulomb metric; the raw model
+    output is one explicit argument away.
+    """
+    from qpet import electron_count
+
+    mol, _, _, coeffs_ref = water_ri
+    default = _dict_model(water_tensormap).predict(mol)
+    raw = _dict_model(water_tensormap, normalize_charge=False).predict(mol)
+
+    target = electron_count(mol) + DEFAULT_CHARGE_OFFSET
+    assert abs(float(default.charge()) + target) < 1e-9
+    np.testing.assert_allclose(raw.coeffs, coeffs_ref, atol=1e-10)
+    assert np.abs(default.coeffs - raw.coeffs).max() > 0.0
+
+
+def test_charge_projection_guard_names_the_system(water_ri, water_tensormap):
+    """A too-large correction is skipped, with the offender named."""
+    mol, _, auxmol, coeffs = water_ri
+    broken = _ri_coeffs_to_tensormap(mol, auxmol, coeffs * 0.8)
+
+    model = _dict_model(broken, charge_guard=0.5)
+    with pytest.warns(RuntimeWarning, match=r"system 0 \(H2O1, charge \+0\)"):
+        rho = model.predict(mol)
+    np.testing.assert_allclose(rho.coeffs, coeffs * 0.8, atol=1e-12)
+
+
+def test_missing_ecp_is_flagged():
+    """A def2 basis on a heavy element without an ECP is a silent wrong answer."""
+    from qpet.model import _warn_if_ecp_is_missing
+
+    iodide = gto.M(atom="I 0 0 0; H 0 0 1.61", basis="def2-svp", verbose=0)
+    water = gto.M(atom="O 0 0 0; H 0 0 0.96; H 0.93 0 -0.24", basis="def2-svp")
+
+    with pytest.warns(RuntimeWarning, match="no 'ecp' set"):
+        _warn_if_ecp_is_missing([iodide], None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _warn_if_ecp_is_missing([iodide], "def2-svp")
+        _warn_if_ecp_is_missing([water], None)
