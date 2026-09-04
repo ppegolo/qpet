@@ -12,9 +12,13 @@ a test pins the two implementations against each other.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import scipy.linalg
 from pyscf import gto
+
+from qpet.conditioning import nuclear_charges_of
 
 # Ghost Atom Configuration
 _GHOST_ALPHA = 1e-12
@@ -60,7 +64,7 @@ def get_ri_charge(
     ovlp_cross = gto.intor_cross("int1e_ovlp", auxmol, ghost_mol).flatten()
     n_elec = np.dot(ri_coeffs, ovlp_cross * _NORM_FACTOR)
     if include_nuclear:
-        n_nuc = auxmol.atom_charges().sum()
+        n_nuc = nuclear_charges_of(auxmol).sum()
         return np.array(n_nuc - n_elec)
     return np.array(-n_elec)
 
@@ -104,9 +108,10 @@ def get_ri_dipole(
     mu_elec = mu_0 + n_elec * A
 
     if include_nuclear:
-        mu_nuc = np.sum(auxmol.atom_charges()[:, None] * auxmol.atom_coords(), axis=0)
+        z_nuc = nuclear_charges_of(auxmol)
+        mu_nuc = np.sum(z_nuc[:, None] * auxmol.atom_coords(), axis=0)
         # shift nuclear dipole to origin A: mu_nuc_A = mu_nuc - N_nuc * A
-        n_nuc = auxmol.atom_charges().sum()
+        n_nuc = z_nuc.sum()
         mu_nuc -= n_nuc * A
         return mu_elec + mu_nuc
 
@@ -215,7 +220,7 @@ def get_ri_quadrupole(
     if include_nuclear:
         # Shift coordinates relative to 'origin' A
         shifted_coords = auxmol.atom_coords() - A
-        charges = auxmol.atom_charges()
+        charges = nuclear_charges_of(auxmol)
 
         Q_nuc_A = np.einsum("i,ix,iy->xy", charges, shifted_coords, shifted_coords)
 
@@ -253,20 +258,68 @@ def compute_S_vector(auxmol: gto.Mole) -> np.ndarray:
     return S_vec
 
 
+#: Mean charge error of the *reference* RI fits (electrons): an unconstrained
+#: Coulomb-metric fit of a def2 density in ``def2-universal-jfit`` integrates to
+#: slightly more than the exact electron count. Measured at +0.0117 e over the
+#: labelled pocket sets; used as the default target offset at inference so the
+#: projection aims at what the references actually carry.
+DEFAULT_CHARGE_OFFSET = 0.0117
+
+
 def normalize_charge_additive(
-    auxmol: gto.Mole, coeffs: np.ndarray, n_electrons: float
+    auxmol: gto.Mole,
+    coeffs: np.ndarray,
+    n_electrons: float,
+    *,
+    metric: str = "identity",
+    max_shift: float | None = None,
+    label: str | None = None,
 ) -> np.ndarray:
     """
-    Shift s-function coefficients so the density integrates to ``n_electrons``.
+    Shift the coefficients so the density integrates to ``n_electrons``.
 
-    Minimum-norm additive correction along the S vector (``∫χ_i dr``): unlike
-    a multiplicative rescale it leaves the l>0 (shape) channels untouched.
+    The correction is the smallest one, in the chosen metric, that fixes the
+    electron count:
+
+    - ``"identity"``: ``δc ∝ S`` (``S_i = ∫χ_i dr``), i.e. only the s-function
+      coefficients move and the l>0 (shape) channels are untouched. Cheap, but
+      it dumps the missing charge into the tight s functions, which the
+      potential outside the molecule barely sees.
+    - ``"coulomb"``: ``δc ∝ J⁻¹ S`` with ``J = (P|Q)``, the correction of
+      minimum Coulomb self-energy. It spreads the charge over the diffuse
+      functions of every atom, which is what fixes the electrostatic potential
+      at the molecular surface. Costs one ``int2c2e`` and one Cholesky
+      factorisation of the auxiliary basis.
 
     :param auxmol: PySCF auxiliary Mole object.
     :param coeffs: RI coefficients, shape (naux,). Not modified.
     :param n_electrons: Target electron count.
+    :param metric: ``"identity"`` or ``"coulomb"``.
+    :param max_shift: If given and the correction would move more than this
+        many electrons, the coefficients are returned unchanged and a warning
+        is issued. A gap that large is not fitting noise — it means the model
+        does not know one of the elements — and spreading it over the basis
+        would turn a local failure into a global one.
+    :param label: Name of the system, used in the ``max_shift`` warning.
     :return: Corrected coefficients, shape (naux,).
     """
     S_vec = compute_S_vector(auxmol)
-    gamma = (n_electrons - S_vec @ coeffs) / (S_vec @ S_vec)
-    return coeffs + gamma * S_vec
+    shift = n_electrons - S_vec @ coeffs
+    if max_shift is not None and abs(shift) > max_shift:
+        warnings.warn(
+            f"charge projection skipped for {label or 'system'}: the predicted "
+            f"density is off by {shift:+.3f} e (limit {max_shift:g} e). The "
+            f"model most likely does not know one of its elements.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return coeffs.copy()
+    if metric == "identity":
+        direction = S_vec
+    elif metric == "coulomb":
+        J = auxmol.intor("int2c2e")
+        direction = scipy.linalg.cho_solve(scipy.linalg.cho_factor(J), S_vec)
+    else:
+        raise ValueError(f"Unknown metric {metric!r}. Use 'identity' or 'coulomb'.")
+    gamma = shift / (S_vec @ direction)
+    return coeffs + gamma * direction

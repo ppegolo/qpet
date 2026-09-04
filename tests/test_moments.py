@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from pyscf import df, gto
 
 from qpet.moments import (
@@ -90,3 +91,86 @@ def test_apply_dipole_correction_linear_molecule():
     assert np.all(np.isfinite(corrected))
     q_after = float(get_ri_charge(auxmol, corrected))
     assert abs(q_after - q_before) < 1e-9
+
+
+def test_normalize_charge_coulomb_metric_is_minimum_coulomb_norm(water_ri):
+    """
+    ``metric="coulomb"`` must restore the electron count with the correction of
+    minimum Coulomb self-energy: ``δc ∝ J⁻¹ S``, which (unlike the identity
+    metric) also moves coefficients outside the s channel.
+    """
+    from qpet.moments import compute_S_vector, normalize_charge_additive
+
+    _, _, auxmol, coeffs = water_ri
+    scaled = coeffs * 1.03
+    S_vec = compute_S_vector(auxmol)
+    J = auxmol.intor("int2c2e")
+
+    fixed = normalize_charge_additive(auxmol, scaled, 10.0, metric="coulomb")
+    assert abs(S_vec @ fixed - 10.0) < 1e-10
+
+    delta = fixed - scaled
+    # Minimum J-norm among all corrections with the same charge: the KKT
+    # solution is δc = γ J⁻¹ S, so J δc must be parallel to S.
+    j_delta = J @ delta
+    gamma = (j_delta @ S_vec) / (S_vec @ S_vec)
+    assert np.linalg.norm(j_delta - gamma * S_vec) < 1e-10 * np.linalg.norm(j_delta)
+
+    identity = normalize_charge_additive(auxmol, scaled, 10.0, metric="identity")
+    assert (identity - scaled)[S_vec == 0.0].max() == 0.0  # shape channels untouched
+    assert np.abs(delta[S_vec == 0.0]).max() > 0.0  # Coulomb metric uses them
+    assert delta @ J @ delta < (identity - scaled) @ J @ (identity - scaled)
+
+
+def test_normalize_charge_unknown_metric_raises(water_ri):
+    from qpet.moments import normalize_charge_additive
+
+    _, _, auxmol, coeffs = water_ri
+    with pytest.raises(ValueError, match="Unknown metric"):
+        normalize_charge_additive(auxmol, coeffs, 10.0, metric="overlap")
+
+
+def test_normalize_charge_guard_skips_a_hopeless_correction(water_ri):
+    """
+    ``max_shift`` must leave the coefficients alone (and say so) when the gap
+    is too large to be fitting noise.
+
+    A prediction off by an electron means the model does not know one of the
+    elements; spreading that much charge over the whole basis in the Coulomb
+    metric turns a local failure into a global one.
+    """
+    from qpet.moments import compute_S_vector, normalize_charge_additive
+
+    _, _, auxmol, coeffs = water_ri
+    S_vec = compute_S_vector(auxmol)
+
+    with pytest.warns(RuntimeWarning, match="charge projection skipped for Be-ish"):
+        untouched = normalize_charge_additive(
+            auxmol, coeffs, 11.5, metric="coulomb", max_shift=0.5, label="Be-ish"
+        )
+    np.testing.assert_array_equal(untouched, coeffs)
+
+    # Just inside the limit the correction is applied as usual.
+    fixed = normalize_charge_additive(
+        auxmol, coeffs, 10.4, metric="coulomb", max_shift=0.5
+    )
+    assert abs(S_vec @ fixed - 10.4) < 1e-10
+
+
+def test_nuclear_moments_use_effective_charges(hydrogen_iodide_ri):
+    """
+    With the nuclear term included, a neutral ECP molecule must come out
+    neutral: 26 electrons against a 25 + 1 nuclear frame, not 53 + 1.
+    """
+    from qpet.moments import get_ri_charge, get_ri_dipole
+
+    mol, _, auxmol, coeffs = hydrogen_iodide_ri
+    q_total = float(get_ri_charge(auxmol, coeffs, include_nuclear=True))
+    assert abs(q_total) < 0.05
+    # The total dipole of a neutral molecule is origin-independent; a
+    # full-Z nuclear frame would add 28 * shift to it.
+    mu_a = get_ri_dipole(auxmol, coeffs, np.zeros(3), include_nuclear=True)
+    mu_b = get_ri_dipole(
+        auxmol, coeffs, np.array([1.0, -2.0, 0.5]), include_nuclear=True
+    )
+    assert np.allclose(mu_a, mu_b, atol=0.05)

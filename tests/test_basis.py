@@ -109,3 +109,19 @@ def test_select_atoms_on_an_etb_density(water_etb):
     pts = rng.uniform(-4.0, 4.0, size=(50, 3))
     parts = oxygen.potential(pts) + hydrogens.potential(pts)
     assert np.max(np.abs(parts - water_etb.potential(pts))) < 1e-12
+
+
+def test_auxmol_keeps_the_effective_nuclei(hydrogen_iodide_ri):
+    """
+    ``pyscf.df.addons.make_auxmol`` rebuilds the atom table without the ECP:
+    iodine comes back as a 53-charge nucleus in a 26-electron calculation.
+    qpet's ``make_auxmol`` must hand back the nuclei of the orbital molecule.
+    """
+    mol, _, auxmol, _ = hydrogen_iodide_ri
+    assert df.addons.make_auxmol(mol, "def2-universal-jfit").atom_charges()[0] == 53
+    assert auxmol.atom_charges().tolist() == mol.atom_charges().tolist() == [25, 1]
+    assert auxmol.atom_nelec_core(0) == 28
+    assert auxmol.nelectron == mol.nelectron == 26
+    assert (
+        auxmol._atm[:, gto.mole.NUC_MOD_OF] == mol._atm[:, gto.mole.NUC_MOD_OF]
+    ).all()

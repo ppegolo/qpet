@@ -129,3 +129,18 @@ class TestEspCube:
         pts_ang = parsed.points()
         v_direct = water_dm.potential(pts_ang).reshape(parsed.dims)
         np.testing.assert_allclose(parsed.field, v_direct, rtol=1e-4, atol=1e-6)
+
+
+def test_cube_atom_lines_carry_element_and_nuclear_charge(
+    tmp_path: Path, hydrogen_iodide_ri
+):
+    """CUBE atom lines hold ``Z`` and the nuclear charge apart; an ECP splits them."""
+    mol, dm, _, _ = hydrogen_iodide_ri
+    out = tmp_path / "hi.cube"
+    field = np.zeros((2, 2, 2))
+    write_cube(out, DMDensity(mol, dm), field, np.zeros(3), 0.5 * np.eye(3))
+    lines = out.read_text().splitlines()
+    iodine = lines[6].split()
+    assert int(iodine[0]) == 53
+    assert float(iodine[1]) == 25.0
+    assert read_cube(out).atomic_numbers.tolist() == [53, 1]

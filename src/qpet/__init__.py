@@ -6,7 +6,15 @@ guesses — alongside exact density-matrix references, on equal footing.
 """
 
 from .basis import make_auxmol, resolve_aux_basis
-from .conditioning import check_spin, spin_from_parity
+from .conditioning import (
+    atomic_numbers_of,
+    check_spin,
+    core_electron_count,
+    core_electrons_per_atom,
+    electron_count,
+    nuclear_charges_of,
+    spin_from_parity,
+)
 from .conversions import (
     BOHR_TO_ANG,
     ase_to_pyscf,
@@ -33,6 +41,7 @@ from .esp_fast import FastESP
 from .fields import DMDensity, RIDensity, ScalarField, nuclear_potential
 from .model import DensityModel
 from .moments import (
+    DEFAULT_CHARGE_OFFSET,
     apply_dipole_correction,
     compute_S_vector,
     get_ri_charge,
@@ -64,6 +73,12 @@ __all__ = [
     "dm_from_auxdensity",
     "spin_from_parity",
     "check_spin",
+    "electron_count",
+    "core_electron_count",
+    "core_electrons_per_atom",
+    "atomic_numbers_of",
+    "nuclear_charges_of",
+    "DEFAULT_CHARGE_OFFSET",
     "get_ri_charge",
     "get_ri_dipole",
     "get_ri_quadrupole",
