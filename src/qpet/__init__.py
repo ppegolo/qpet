@@ -49,6 +49,7 @@ from .moments import (
     get_ri_quadrupole,
     normalize_charge_additive,
 )
+from .partition import FragmentDensity, HirshfeldSplit, free_atom_density
 from .provenance import (
     Fingerprint,
     file_fingerprint,
@@ -65,6 +66,9 @@ except ImportError:  # pragma: no cover - _version.py is generated at build time
 __all__ = [
     "__version__",
     "RIDensity",
+    "FragmentDensity",
+    "HirshfeldSplit",
+    "free_atom_density",
     "DMDensity",
     "ScalarField",
     "DensityModel",

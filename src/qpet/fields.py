@@ -30,6 +30,7 @@ from qpet.conversions import BOHR_TO_ANG
 
 if TYPE_CHECKING:
     from qpet.esp_fast import FastESP
+    from qpet.partition import FragmentDensity
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,36 @@ class RIDensity:
         sub._atm[:, gto.mole.NUC_MOD_OF] = self.auxmol._atm[idx, gto.mole.NUC_MOD_OF]
 
         return RIDensity(sub, self.coeffs[ao_keep])
+
+    def split_hirshfeld(
+        self,
+        atoms_a: Sequence[int],
+        atoms_b: Sequence[int] | None = None,
+        **options: object,
+    ) -> tuple[FragmentDensity, FragmentDensity]:
+        """
+        Partition the density into two fragments in real space (Hirshfeld).
+
+        Where :meth:`select_atoms` assigns every auxiliary function to the atom
+        it is centred on, this assigns every point in space to the fragments in
+        proportion to their promolecular densities, so the shared density at a
+        contact is divided by the electrons rather than by the fit's choice of
+        functions. Each fragment's potential is its :meth:`select_atoms`
+        potential plus a correction integrated on the contact atoms' cells;
+        the two potentials sum exactly to :meth:`potential`. See
+        :mod:`qpet.partition` for the method and the options
+        (``grid_level``, ``contact_radius``, ``environment_radius``, ``softcore``).
+
+        :param atoms_a: Atom indices of the first fragment.
+        :param atoms_b: Atom indices of the second fragment; ``None`` takes the
+            complement of ``atoms_a``.
+        :param options: Forwarded to :class:`~qpet.partition.HirshfeldSplit`.
+        :return: ``(fragment_a, fragment_b)``, two
+            :class:`~qpet.partition.FragmentDensity` scalar fields.
+        """
+        from qpet.partition import HirshfeldSplit
+
+        return HirshfeldSplit(self, atoms_a, atoms_b, **options).fragments  # type: ignore[arg-type]
 
     @property
     def positions(self) -> np.ndarray:
