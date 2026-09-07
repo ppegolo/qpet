@@ -122,8 +122,12 @@ def pyscf_to_system(
     if dtype is None:
         dtype = torch.float32
 
+    # The species a model is trained on is the atomic number. Under an ECP,
+    # ``mol.atom_charge`` is the *effective* nuclear charge instead (iodine with
+    # def2's ECP28 reports 25), which would hand the model a different element
+    # and, with it, that element's block of coefficients.
     atom_types = torch.tensor(
-        [mol.atom_charge(i) for i in range(mol.natm)],
+        [gto.charge(mol.atom_pure_symbol(i)) for i in range(mol.natm)],
         dtype=torch.int32,
         device=device,
     )

@@ -266,6 +266,50 @@ def compute_S_vector(auxmol: gto.Mole) -> np.ndarray:
 DEFAULT_CHARGE_OFFSET = 0.0117
 
 
+#: Relative diagonal shift of the first regularised retry of the Coulomb
+#: solve; doubled on every further retry up to :data:`_MAX_REGULARISATION`.
+_MIN_REGULARISATION = 1e-10
+_MAX_REGULARISATION = 1e-4
+
+
+def _coulomb_direction(
+    J: np.ndarray, S_vec: np.ndarray, label: str | None
+) -> np.ndarray:
+    """
+    ``J⁻¹ S`` by Cholesky, regularised if the metric is not positive definite.
+
+    On large systems the auxiliary basis can be numerically linearly dependent
+    (diffuse functions of many nearby atoms), so ``J`` is positive
+    semi-definite to working precision and the factorisation fails. A Tikhonov
+    shift ``J + ε diag(J)`` damps exactly those directions; ``ε`` starts tiny
+    and doubles until the factorisation succeeds, and a warning reports it.
+    """
+    try:
+        return scipy.linalg.cho_solve(scipy.linalg.cho_factor(J), S_vec)
+    except np.linalg.LinAlgError:
+        pass
+    diagonal = np.diag(J).copy()
+    epsilon = _MIN_REGULARISATION
+    while epsilon <= _MAX_REGULARISATION:
+        try:
+            factor = scipy.linalg.cho_factor(J + np.diag(epsilon * diagonal))
+        except np.linalg.LinAlgError:
+            epsilon *= 2.0
+            continue
+        warnings.warn(
+            f"Coulomb metric of {label or 'system'} is not positive definite "
+            f"(naux={len(S_vec)}); charge projection used a relative diagonal "
+            f"shift of {epsilon:.1e}.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return scipy.linalg.cho_solve(factor, S_vec)
+    raise np.linalg.LinAlgError(
+        f"Coulomb metric of {label or 'system'} could not be factorised even "
+        f"with a relative diagonal shift of {_MAX_REGULARISATION:g}."
+    )
+
+
 def normalize_charge_additive(
     auxmol: gto.Mole,
     coeffs: np.ndarray,
@@ -297,9 +341,9 @@ def normalize_charge_additive(
     :param metric: ``"identity"`` or ``"coulomb"``.
     :param max_shift: If given and the correction would move more than this
         many electrons, the coefficients are returned unchanged and a warning
-        is issued. A gap that large is not fitting noise — it means the model
-        does not know one of the elements — and spreading it over the basis
-        would turn a local failure into a global one.
+        is issued. A gap that large is not fitting noise, and spreading it over
+        the basis would turn a local failure into a global one. The limit has
+        to scale with the system: see ``DensityModel.charge_guard_relative``.
     :param label: Name of the system, used in the ``max_shift`` warning.
     :return: Corrected coefficients, shape (naux,).
     """
@@ -308,8 +352,9 @@ def normalize_charge_additive(
     if max_shift is not None and abs(shift) > max_shift:
         warnings.warn(
             f"charge projection skipped for {label or 'system'}: the predicted "
-            f"density is off by {shift:+.3f} e (limit {max_shift:g} e). The "
-            f"model most likely does not know one of its elements.",
+            f"density is off by {shift:+.3f} e (limit {max_shift:g} e), far "
+            f"more than fitting noise; spreading it over the basis would turn "
+            f"a local failure into a global one.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -317,8 +362,7 @@ def normalize_charge_additive(
     if metric == "identity":
         direction = S_vec
     elif metric == "coulomb":
-        J = auxmol.intor("int2c2e")
-        direction = scipy.linalg.cho_solve(scipy.linalg.cho_factor(J), S_vec)
+        direction = _coulomb_direction(auxmol.intor("int2c2e"), S_vec, label)
     else:
         raise ValueError(f"Unknown metric {metric!r}. Use 'identity' or 'coulomb'.")
     gamma = shift / (S_vec @ direction)

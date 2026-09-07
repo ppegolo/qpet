@@ -174,3 +174,33 @@ def test_nuclear_moments_use_effective_charges(hydrogen_iodide_ri):
         auxmol, coeffs, np.array([1.0, -2.0, 0.5]), include_nuclear=True
     )
     assert np.allclose(mu_a, mu_b, atol=0.05)
+
+
+def test_coulomb_direction_regularises_a_singular_metric():
+    """A rank-deficient metric (coincident functions) still yields a finite
+    direction, with a warning naming the shift; a healthy metric warns nothing."""
+    import numpy as np
+    import pytest
+
+    from qpet.moments import _coulomb_direction
+
+    rng = np.random.default_rng(0)
+    A = rng.normal(size=(6, 6))
+    J = A @ A.T
+    J[5] = J[4]  # two identical functions: exactly singular
+    J[:, 5] = J[:, 4]
+    S = rng.normal(size=6)
+    S[5] = S[4]  # identical functions have identical integrals
+
+    with pytest.warns(RuntimeWarning, match="not positive definite"):
+        direction = _coulomb_direction(J, S, "toy")
+    assert np.all(np.isfinite(direction))
+    assert abs(direction[4] - direction[5]) < 1e-6 * np.abs(direction).max()
+
+    healthy = A @ A.T + np.eye(6)
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        expected = np.linalg.solve(healthy, S)
+        np.testing.assert_allclose(_coulomb_direction(healthy, S, None), expected)
