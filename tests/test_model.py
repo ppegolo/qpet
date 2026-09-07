@@ -399,3 +399,52 @@ def test_missing_ecp_is_flagged():
         warnings.simplefilter("error")
         _warn_if_ecp_is_missing([iodide], "def2-svp")
         _warn_if_ecp_is_missing([water], None)
+
+
+def test_coefficient_count_error_names_the_heavy_element():
+    """A block width the auxiliary basis does not expect must name the element."""
+    import numpy as np
+    import pytest
+    from pyscf import gto
+
+    from qpet.basis import make_auxmol
+    from qpet.model import _check_coefficient_count
+
+    mol = gto.M(
+        atom="C 0 0 0; I 0 0 2.14",
+        basis="def2-svp",
+        ecp="def2-svp",
+        spin=1,
+        verbose=0,
+    )
+    auxmol = make_auxmol(mol, "def2-universal-jfit")
+    _check_coefficient_count(mol, auxmol, np.zeros(auxmol.nao))  # right length: silent
+    with pytest.raises(ValueError, match=r"contains I\b"):
+        _check_coefficient_count(mol, auxmol, np.zeros(auxmol.nao + 31))
+
+    light = gto.M(atom="C 0 0 0; O 0 0 1.2", basis="def2-svp", verbose=0)
+    light_aux = make_auxmol(light, "def2-universal-jfit")
+    with pytest.raises(ValueError, match="aux_basis matches"):
+        _check_coefficient_count(light, light_aux, np.zeros(light_aux.nao - 1))
+
+
+def test_charge_guard_scales_with_the_electron_count():
+    """The guard is a floor plus a fraction of the electron count."""
+    from qpet.model import DensityModel
+
+    model = DensityModel.__new__(DensityModel)  # no checkpoint needed
+    model.charge_guard = 0.5
+    model.charge_guard_relative = 1e-3
+
+    assert model._max_shift(10) == 0.5  # a small molecule keeps the floor
+    assert model._max_shift(400) == 0.5
+    assert model._max_shift(2594) == pytest.approx(2.594)  # a carved site
+    assert model._max_shift(3150) == pytest.approx(3.150)
+
+    # Calibration: healthy predictions of this model stay below 1e-3 of the
+    # electron count, a single zeroed atom block lands above 1.5e-3.
+    assert 1.069 < model._max_shift(2954)  # thrombin site, healthy
+    assert 4.834 > model._max_shift(3150)  # same complex, one block zeroed
+
+    model.charge_guard = None
+    assert model._max_shift(3150) is None

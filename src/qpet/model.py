@@ -91,6 +91,41 @@ def _system_label(mol: gto.Mole, index: int) -> str:
     return f"system {index} ({formula}, charge {mol.charge:+d})"
 
 
+def _check_coefficient_count(
+    mol: gto.Mole, auxmol: gto.Mole, coeffs: np.ndarray
+) -> None:
+    """
+    Fail with the element to blame when a prediction is the wrong length.
+
+    A model covers a set of elements; on one it does not, the backend returns a
+    block of the wrong width and the vector no longer matches the auxiliary
+    basis. Contracting it would raise a shape error naming neither the system
+    nor the element, so name them here.
+    """
+    if len(coeffs) == auxmol.nao:
+        return
+    offsets = auxmol.aoslice_by_atom()[:, 3] - auxmol.aoslice_by_atom()[:, 2]
+    per_element: dict[str, int] = {}
+    for atom in range(auxmol.natm):
+        per_element.setdefault(auxmol.atom_symbol(atom), int(offsets[atom]))
+    heavy = sorted(
+        (sym for sym in per_element if gto.charge(sym) >= 37),
+        key=gto.charge,
+    )
+    hint = (
+        f" The system contains {', '.join(heavy)}, which carries an ECP: check "
+        f"that the species reaching the model is the atomic number and not the "
+        f"ECP-reduced nuclear charge, and that its block matches "
+        f"{auxmol.basis!r}."
+        if heavy
+        else " Check that aux_basis matches the basis the model was trained on."
+    )
+    raise ValueError(
+        f"Predicted {len(coeffs)} coefficients for {_system_label(mol, 0)} but "
+        f"the auxiliary basis has {auxmol.nao} functions.{hint}"
+    )
+
+
 def _tensormap_to_pyscf_coefficients(
     tensor: TensorMap,
 ) -> list[np.ndarray]:
@@ -263,10 +298,17 @@ class DensityModel:
         fits are unconstrained and integrate to slightly more than the exact
         count; this is the mean of that basis-incompleteness offset, so the
         target is what a perfect model of the *reference* would predict.
-    :param charge_guard: Skip the projection (with a warning naming the
-        system) when it would move more than this many electrons, default
-        0.5 e. Such a gap is an unknown element, not fitting noise, and
-        spreading it over the basis would make things worse.
+    :param charge_guard: Absolute floor of the projection guard, in electrons
+        (default 0.5). The projection is skipped, with a warning naming the
+        system, when it would move more than
+        ``max(charge_guard, charge_guard_relative * n_electrons)``.
+    :param charge_guard_relative: Size-dependent part of the same guard
+        (default 1e-3, i.e. 0.1 % of the electron count). An absolute limit
+        alone is wrong at both ends: on a protein site of 3000 electrons a
+        healthy prediction routinely misses by 1 e (0.03 %), while on a small
+        molecule 0.5 e is already gross. Calibrated on this model: healthy
+        systems from water to an 818-atom complex stay below 1e-3, and zeroing
+        a single atom's coefficient block lands at 1.5e-3 to 2.3e-3.
     :param ecp: Effective core potential name used to build molecules in
         :meth:`predict_systems`; unused by :meth:`predict`, which takes the
         caller's ``Mole`` as-is. Set it whenever ``basis`` implies an ECP
@@ -321,6 +363,7 @@ class DensityModel:
         charge_metric: str = "coulomb",
         charge_offset: float = DEFAULT_CHARGE_OFFSET,
         charge_guard: float | None = 0.5,
+        charge_guard_relative: float = 1e-3,
         constrain_dipole: bool = False,
         oracle_charges: bool = False,
         dipole_head: str = "mtt::electric_dipole",
@@ -356,6 +399,7 @@ class DensityModel:
         self.charge_metric = charge_metric
         self.charge_offset = float(charge_offset)
         self.charge_guard = charge_guard
+        self.charge_guard_relative = charge_guard_relative
         self.constrain_dipole = constrain_dipole
         self.oracle_charges = oracle_charges
         self.dipole_head = dipole_head
@@ -551,6 +595,13 @@ class DensityModel:
             outputs = self._evaluate(systems)
             coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
 
+        # Check the block structure before anything contracts the coefficients
+        # with an auxiliary-basis quantity: an element the model does not cover
+        # yields a short vector, and a matmul shape error names neither the
+        # system nor the element.
+        for mol, auxmol, coeffs in zip(mols, auxmols, coeffs_list, strict=True):
+            _check_coefficient_count(mol, auxmol, coeffs)
+
         if self.normalize_charge:
             coeffs_list = [
                 normalize_charge_additive(
@@ -558,7 +609,7 @@ class DensityModel:
                     coeffs,
                     electron_count(mol) + self.charge_offset,
                     metric=self.charge_metric,
-                    max_shift=self.charge_guard,
+                    max_shift=self._max_shift(electron_count(mol)),
                     label=_system_label(mol, index),
                 )
                 for index, (mol, auxmol, coeffs) in enumerate(
@@ -581,23 +632,23 @@ class DensityModel:
                 )
             ]
 
-        densities = []
-        for auxmol, coeffs in zip(auxmols, coeffs_list, strict=True):
-            if len(coeffs) != auxmol.nao:
-                raise ValueError(
-                    f"Predicted {len(coeffs)} coefficients but auxiliary basis "
-                    f"has {auxmol.nao} functions. Check that aux_basis matches "
-                    f"the basis the model was trained on."
-                )
-            densities.append(RIDensity(auxmol, coeffs))
-        return densities
+        return [
+            RIDensity(auxmol, coeffs)
+            for auxmol, coeffs in zip(auxmols, coeffs_list, strict=True)
+        ]
+
+    def _max_shift(self, n_electrons: float) -> float | None:
+        """The projection guard for a system of this size, in electrons."""
+        if self.charge_guard is None:
+            return None
+        return max(self.charge_guard, self.charge_guard_relative * n_electrons)
 
     def _petfast_coefficients(self, mol: gto.Mole) -> np.ndarray:
         """One molecule through petfast, in PySCF auxiliary-basis order.
 
         The same extraction the metatomic path sees — positions in angstrom and
-        the per-atom charges PySCF reports — so the two backends are fed
-        identical inputs.
+        the atomic numbers, not the ECP-reduced nuclear charges — so the two
+        backends are fed identical inputs.
         """
         import torch
 
@@ -605,7 +656,7 @@ class DensityModel:
             mol.atom_coords() * BOHR_TO_ANG, dtype=self._dtype, device=self._device
         )
         types = torch.tensor(
-            [mol.atom_charge(i) for i in range(mol.natm)],
+            [gto.charge(mol.atom_pure_symbol(i)) for i in range(mol.natm)],
             dtype=torch.int32,
             device=self._device,
         )
