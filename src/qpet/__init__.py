@@ -39,6 +39,12 @@ from .cube import (
 )
 from .esp_fast import FastESP
 from .fields import DMDensity, RIDensity, ScalarField, nuclear_potential
+from .interactions import (
+    HARTREE_TO_KCAL,
+    coulomb_interaction_energy,
+    hirshfeld_dispersion_energy,
+    hirshfeld_volume_ratios,
+)
 from .model import DensityModel
 from .moments import (
     DEFAULT_CHARGE_OFFSET,
@@ -49,7 +55,7 @@ from .moments import (
     get_ri_quadrupole,
     normalize_charge_additive,
 )
-from .partition import FragmentDensity, HirshfeldSplit, free_atom_density
+from .partition import FragmentDensity
 from .provenance import (
     Fingerprint,
     file_fingerprint,
@@ -67,8 +73,10 @@ __all__ = [
     "__version__",
     "RIDensity",
     "FragmentDensity",
-    "HirshfeldSplit",
-    "free_atom_density",
+    "coulomb_interaction_energy",
+    "hirshfeld_volume_ratios",
+    "hirshfeld_dispersion_energy",
+    "HARTREE_TO_KCAL",
     "DMDensity",
     "ScalarField",
     "DensityModel",
