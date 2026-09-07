@@ -39,6 +39,16 @@ from .cube import (
 )
 from .esp_fast import FastESP
 from .fields import DMDensity, RIDensity, ScalarField, nuclear_potential
+from .interactions import (
+    HARTREE_TO_KCAL,
+    analytic_coulomb_interaction_energy,
+    coulomb_interaction_energy,
+    free_atom_volume,
+    grid_coulomb_interaction_energy,
+    hirshfeld_dispersion_energy,
+    hirshfeld_volume_ratios,
+    ts_dispersion_energy,
+)
 from .model import DensityModel
 from .moments import (
     DEFAULT_CHARGE_OFFSET,
@@ -69,6 +79,14 @@ __all__ = [
     "FragmentDensity",
     "HirshfeldSplit",
     "free_atom_density",
+    "free_atom_volume",
+    "coulomb_interaction_energy",
+    "analytic_coulomb_interaction_energy",
+    "grid_coulomb_interaction_energy",
+    "hirshfeld_volume_ratios",
+    "hirshfeld_dispersion_energy",
+    "ts_dispersion_energy",
+    "HARTREE_TO_KCAL",
     "DMDensity",
     "ScalarField",
     "DensityModel",
