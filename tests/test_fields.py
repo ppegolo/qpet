@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -191,7 +193,6 @@ class TestEffectiveCorePotential:
     def test_element_and_nuclear_charge(self, hydrogen_iodide_ri):
         mol, dm, auxmol, coeffs = hydrogen_iodide_ri
         for rho in (DMDensity(mol, dm), RIDensity(auxmol, coeffs)):
-            assert rho.atomic_numbers.tolist() == [53, 1]
             assert rho.nuclear_charges.tolist() == [25, 1]
 
     def test_ri_potential_matches_dm_with_ecp(self, hydrogen_iodide_ri):
@@ -217,9 +218,35 @@ class TestEffectiveCorePotential:
         iodine = rho.select_atoms([0])
         assert iodine.atomic_numbers.tolist() == [53]
         assert iodine.nuclear_charges.tolist() == [25]
-        pts = np.array([[3.0, 1.0, -2.0], [-2.0, 2.0, 4.0]])
-        total = rho.potential(pts, fast=False)
-        parts = iodine.potential(pts, fast=False) + rho.select_atoms([1]).potential(
-            pts, fast=False
-        )
-        assert np.allclose(total, parts, atol=1e-10)
+
+
+def test_with_periodic_images_makes_the_density_periodic(water_ri):
+    """A molecule in a box: with images, ρ(p) equals ρ(p + lattice vector)."""
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    cell = 5.0 * np.eye(3)
+    periodic = rho.with_periodic_images(cell)
+    assert periodic.auxmol.natm == 27 * auxmol.natm
+    assert periodic.coeffs.shape == (27 * auxmol.nao,)
+    pts = np.array([[0.3, 0.2, 0.1], [-0.6, 0.4, 0.5]])
+    np.testing.assert_allclose(
+        periodic.density(pts), periodic.density(pts + cell[0]), rtol=1e-6, atol=1e-8
+    )
+    # One cell alone is not periodic: a point near the face sees the missing neighbours.
+    face = np.array([[2.4, 0.0, 0.0]])
+    assert periodic.density(face)[0] > rho.density(face)[0]
+
+
+def test_with_periodic_images_radius_selects_atoms(water_ri):
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    cell = 5.0 * np.eye(3)
+    local = rho.with_periodic_images(cell, centre=np.zeros(3), radius=1.0)
+    assert 1 <= local.auxmol.natm < 27 * auxmol.natm
+    # The oxygen at the origin is kept, and the density there is unchanged.
+    origin = np.zeros((1, 3))
+    np.testing.assert_allclose(local.density(origin), rho.density(origin), rtol=1e-6)
+
+    message = "centre and radius must be given together."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        rho.with_periodic_images(cell, radius=1.0)

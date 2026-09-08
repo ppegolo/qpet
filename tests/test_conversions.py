@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import ase
+import numpy as np
+import torch
+from pyscf import gto
 
-from qpet import ase_to_pyscf
+from qpet import ase_to_pyscf, build_system, pyscf_to_system
 
 
 def test_ase_to_pyscf_propagates_charge_and_spin():
@@ -75,27 +78,26 @@ def test_attach_conditioning_keeps_values_the_caller_set():
     assert float(system.get_data("spin_multiplicity").block().values[0, 0]) == 1.0
 
 
-def test_system_types_are_atomic_numbers_under_an_ecp():
+def test_system_types_are_atomic_numbers_under_an_ecp(hydrogen_iodide_ri):
     """An ECP reduces the nuclear charge; the species must stay the element.
 
     ``mol.atom_charge`` reports 25 for iodine with def2's ECP28. Handing that
     to a model is handing it manganese, which answers with manganese's block of
     coefficients and a length the auxiliary basis does not expect.
     """
-    from pyscf import gto
-
-    from qpet.conversions import pyscf_to_system
-
-    mol = gto.M(
-        atom="C 0 0 0; I 0 0 2.14",
-        basis="def2-svp",
-        ecp="def2-svp",
-        spin=1,
-        verbose=0,
-    )
-    assert int(mol.atom_charge(1)) == 25  # the trap this test guards
-    system = pyscf_to_system(mol)
-    assert system.types.tolist() == [6, 53]
+    mol = hydrogen_iodide_ri[0]
+    assert int(mol.atom_charge(0)) == 25  # the trap this test guards
+    assert pyscf_to_system(mol).types.tolist() == [53, 1]
 
     light = gto.M(atom="C 0 0 0; O 0 0 1.2", basis="def2-svp", verbose=0)
     assert pyscf_to_system(light).types.tolist() == [6, 8]
+
+
+def test_build_system_periodic_and_molecular():
+    numbers = np.array([8, 1, 1])
+    positions = np.array([[0.0, 0.0, 0.0], [0.757, 0.587, 0.0], [-0.757, 0.587, 0.0]])
+    mol = build_system(numbers, positions)
+    assert not bool(mol.pbc.any())
+    assert torch.count_nonzero(mol.cell) == 0
+    crystal = build_system(numbers, positions, cell=6.0 * np.eye(3))
+    assert bool(crystal.pbc.all())

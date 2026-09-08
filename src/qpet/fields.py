@@ -296,6 +296,69 @@ class RIDensity:
 
         return RIDensity(sub, self.coeffs[ao_keep])
 
+    def with_periodic_images(
+        self,
+        cell: np.ndarray,
+        centre: np.ndarray | None = None,
+        radius: float | None = None,
+        images: int = 1,
+    ) -> RIDensity:
+        """
+        Extend a periodic cell's density with the images of its atoms.
+
+        The coefficients of a periodic prediction describe the atoms of one
+        cell only, so :meth:`density` and :meth:`potential` near a cell face
+        miss the neighbouring cells. This returns a density whose auxiliary
+        molecule holds every atom of the cell translated by lattice vectors
+        up to ``±images`` along each axis (each copy with the same
+        coefficients), optionally restricted to atoms within ``radius`` of
+        ``centre``.
+
+        :param cell: Lattice vectors as rows, shape (3, 3), Angstrom.
+        :param centre: Point in Angstrom, shape (3,); with ``radius`` selects
+            the atoms kept. ``None`` keeps every image.
+        :param radius: Keep atoms within this distance (Angstrom) of ``centre``;
+            given together with ``centre``.
+        :param images: Range of lattice translations per axis (default 1: the
+            27 cells around the original).
+        :return: Density on the selected atoms and images.
+        """
+        if (centre is None) != (radius is None):
+            raise ValueError("centre and radius must be given together.")
+        cell = np.asarray(cell, dtype=float)
+        positions = self.auxmol.atom_coords(unit="Ang")
+        aoslice = self.auxmol.aoslice_by_atom()
+        shifts = range(-images, images + 1)
+        atoms, keep, coeffs = [], [], []
+        for i in shifts:
+            for j in shifts:
+                for k in shifts:
+                    t = np.array([i, j, k], dtype=float) @ cell
+                    for a in range(self.auxmol.natm):
+                        pos = positions[a] + t
+                        if (
+                            radius is not None
+                            and np.linalg.norm(pos - np.asarray(centre)) > radius
+                        ):
+                            continue
+                        atoms.append(
+                            (self.auxmol._atom[a][0], (pos / BOHR_TO_ANG).tolist())
+                        )
+                        keep.append(a)
+                        coeffs.append(self.coeffs[aoslice[a, 2] : aoslice[a, 3]])
+        if not atoms:
+            raise ValueError("no atom within radius of centre")
+        sup = gto.Mole()
+        sup.atom = atoms
+        sup.basis = self.auxmol.basis
+        sup.unit = "Bohr"
+        sup.charge = 0
+        sup.spin = int(sum(self.auxmol.atom_charge(a) for a in keep)) % 2
+        sup.verbose = 0
+        sup.build()
+        copy_nuclei(self.auxmol, sup, keep)
+        return RIDensity(sup, np.concatenate(coeffs))
+
     def split_hirshfeld(
         self,
         atoms_a: Sequence[int],
@@ -312,8 +375,7 @@ class RIDensity:
         functions. Each fragment's potential is its :meth:`select_atoms`
         potential plus a correction integrated on the contact atoms' cells;
         the two potentials sum exactly to :meth:`potential`. See
-        :mod:`qpet.partition` for the method and the options
-        (``grid_level``, ``contact_radius``, ``environment_radius``, ``softcore``).
+        :mod:`qpet.partition` for the method.
 
         :param atoms_a: Atom indices of the first fragment.
         :param atoms_b: Atom indices of the second fragment; ``None`` takes the
