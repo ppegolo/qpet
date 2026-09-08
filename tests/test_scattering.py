@@ -193,3 +193,49 @@ def test_independent_atom_structure_factors_debye_waller(water, q_vectors):
     )
     q2 = np.einsum("ni,ni->n", q_vectors, q_vectors)
     np.testing.assert_allclose(smeared, rigid * np.exp(-0.5 * 0.02 * q2))
+
+
+def test_cell_from_parameters_reproduces_lengths_and_angles():
+    from qpet.scattering import cell_from_parameters
+
+    cell = cell_from_parameters(4.726, 9.369, 10.239, 88.796, 85.14, 78.90)
+    lengths = np.linalg.norm(cell, axis=1)
+    np.testing.assert_allclose(lengths, [4.726, 9.369, 10.239])
+    cosines = [cell[1] @ cell[2], cell[0] @ cell[2], cell[0] @ cell[1]] / np.array(
+        [lengths[1] * lengths[2], lengths[0] * lengths[2], lengths[0] * lengths[1]]
+    )
+    np.testing.assert_allclose(np.degrees(np.arccos(cosines)), [88.796, 85.14, 78.90])
+
+
+def test_hkl_to_q_triclinic_cell_phase():
+    """q·r equals 2π h·frac for a triclinic cell, with reciprocal vectors from cross products."""
+    from qpet.scattering import cell_from_parameters
+
+    cell = cell_from_parameters(4.726, 9.369, 10.239, 88.796, 85.14, 78.90)
+    hkl = np.array([[1, 0, 0], [0, 2, -1], [3, -1, 2], [-2, 4, 5]], dtype=float)
+    frac = np.array([[0.1, 0.7, -0.3], [0.45, 0.2, 0.9]])
+    q = hkl_to_q(hkl, cell)
+    r = frac @ cell
+    np.testing.assert_allclose(q @ r.T, 2 * np.pi * hkl @ frac.T, atol=1e-12)
+    a, b, c = cell
+    vol = a @ np.cross(b, c)
+    recip = np.array([np.cross(b, c), np.cross(c, a), np.cross(a, b)]) / vol
+    np.testing.assert_allclose(q, 2 * np.pi * hkl @ recip, atol=1e-12)
+
+
+def test_adp_cif_to_cartesian_matches_reciprocal_axis_exponent():
+    """exp(-2π² Σ h_i h_j a*_i a*_j U^ij) == exp(-½ qᵀ U_cart q) on a triclinic cell."""
+    from qpet.scattering import adp_cif_to_cartesian, cell_from_parameters, debye_waller
+
+    cell = cell_from_parameters(4.726, 9.369, 10.239, 88.796, 85.14, 78.90)
+    u_cif = np.array([[0.0313, 0.0237, -0.0041], [0.0237, 0.0670, -0.0073], [-0.0041, -0.0073, 0.0174]])
+    hkl = np.array([[1, 0, 0], [0, 2, -1], [3, -1, 2], [-2, 4, 5]], dtype=float)
+    a, b, c = cell
+    recip = np.linalg.norm([np.cross(b, c), np.cross(c, a), np.cross(a, b)], axis=1) / (a @ np.cross(b, c))
+    reference = np.exp(-2 * np.pi**2 * np.einsum("ni,ij,nj->n", hkl * recip, u_cif, hkl * recip))
+    q = hkl_to_q(hkl, cell)
+    ours = debye_waller(q, adp_cif_to_cartesian(u_cif, cell)[None], 1)[:, 0]
+    np.testing.assert_allclose(ours, reference, rtol=1e-12)
+    # Orthorhombic cell: identity.
+    ortho = np.diag([5.93, 12.26, 5.79])
+    np.testing.assert_allclose(adp_cif_to_cartesian(u_cif, ortho), u_cif)

@@ -68,7 +68,9 @@ from .provenance import (
     provenance_columns,
 )
 from .scattering import (
+    adp_cif_to_cartesian,
     atomic_form_factors,
+    cell_from_parameters,
     debye_waller,
     electron_structure_factors,
     hkl_to_q,
@@ -111,6 +113,8 @@ __all__ = [
     "structure_factors_from_form_factors",
     "electron_structure_factors",
     "hkl_to_q",
+    "cell_from_parameters",
+    "adp_cif_to_cartesian",
     "spherical_atom_form_factor",
     "independent_atom_structure_factors",
     "debye_waller",

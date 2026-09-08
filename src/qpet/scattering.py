@@ -47,6 +47,8 @@ from .partition import FragmentDensity, free_atom_density
 
 __all__ = [
     "hkl_to_q",
+    "cell_from_parameters",
+    "adp_cif_to_cartesian",
     "spherical_atom_form_factor",
     "independent_atom_structure_factors",
     "debye_waller",
@@ -72,13 +74,57 @@ def hkl_to_q(hkl: np.ndarray, cell: np.ndarray) -> np.ndarray:
     Scattering vectors of Miller indices, ``q = 2π h·B`` with ``B`` the
     reciprocal cell.
 
+    With positions ``r = frac @ cell`` the reciprocal vectors are the rows of
+    ``inv(cell).T``, so that ``q·r = 2π h·frac`` for any cell shape.
+
     :param hkl: Miller indices, shape (N, 3).
     :param cell: Lattice vectors as rows, shape (3, 3), Å.
     :return: Scattering vectors in Å⁻¹ (with the ``2π``), shape (N, 3).
     """
     hkl = np.asarray(hkl, dtype=float)
     cell = np.asarray(cell, dtype=float)
-    return 2.0 * np.pi * hkl @ np.linalg.inv(cell)
+    return 2.0 * np.pi * hkl @ np.linalg.inv(cell).T
+
+
+def cell_from_parameters(
+    a: float, b: float, c: float, alpha: float, beta: float, gamma: float
+) -> np.ndarray:
+    """
+    Lattice vectors (rows, Å) from cell parameters, angles in degrees.
+
+    Standard crystallographic orientation: ``a`` along x, ``b`` in the xy
+    plane. Fractional coordinates map to Cartesian as ``frac @ cell``.
+    """
+    al, be, ga = np.radians([alpha, beta, gamma])
+    cx = c * np.cos(be)
+    cy = c * (np.cos(al) - np.cos(be) * np.cos(ga)) / np.sin(ga)
+    cz = np.sqrt(max(c**2 - cx**2 - cy**2, 0.0))
+    return np.array(
+        [[a, 0.0, 0.0], [b * np.cos(ga), b * np.sin(ga), 0.0], [cx, cy, cz]]
+    )
+
+
+def adp_cif_to_cartesian(u_cif: np.ndarray, cell: np.ndarray) -> np.ndarray:
+    """
+    Cartesian displacement tensor from the CIF ``U^{ij}`` convention.
+
+    CIF/SHELX ``U^{ij}`` are defined against the reciprocal axes so that the
+    Debye–Waller exponent is ``-2π² Σ_ij h_i h_j a*_i a*_j U^{ij}``. With
+    ``N = diag(a*, b*, c*)`` (reciprocal lengths without 2π) and ``cell`` the
+    lattice vectors as rows, ``U_cart = cellᵀ N U N cell``, which makes
+    :func:`debye_waller` (``exp(-½ qᵀ U_cart q)`` with ``q`` from
+    :func:`hkl_to_q`) agree with the CIF exponent for every reflection. For an
+    orthorhombic cell with axes along x, y, z this is the identity.
+
+    :param u_cif: ``U^{ij}`` tensor(s), shape (3, 3) or (n, 3, 3), Å².
+    :param cell: Lattice vectors as rows, shape (3, 3), Å.
+    :return: Cartesian tensor(s), same shape, Å².
+    """
+    cell = np.asarray(cell, dtype=float)
+    recip = np.linalg.inv(cell).T  # rows: reciprocal vectors (no 2π)
+    m = cell.T @ np.diag(np.linalg.norm(recip, axis=1))
+    u = np.asarray(u_cif, dtype=float)
+    return np.einsum("ij,...jk,lk->...il", m, u, m)
 
 
 def debye_waller(q: np.ndarray, adps: np.ndarray | None, n_atoms: int) -> np.ndarray:
