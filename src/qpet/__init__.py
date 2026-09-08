@@ -66,6 +66,16 @@ from .provenance import (
     model_provenance,
     provenance_columns,
 )
+from .scattering import (
+    atomic_form_factors,
+    debye_waller,
+    electron_structure_factors,
+    hkl_to_q,
+    read_tsc,
+    structure_factors,
+    structure_factors_from_form_factors,
+    write_tsc,
+)
 from .scf import dm_from_auxdensity
 
 try:
@@ -93,6 +103,14 @@ __all__ = [
     "FastESP",
     "nuclear_potential",
     "dm_from_auxdensity",
+    "structure_factors",
+    "atomic_form_factors",
+    "structure_factors_from_form_factors",
+    "electron_structure_factors",
+    "hkl_to_q",
+    "debye_waller",
+    "write_tsc",
+    "read_tsc",
     "spin_from_parity",
     "check_spin",
     "electron_count",

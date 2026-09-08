@@ -29,6 +29,11 @@ grids, multipoles, CUBE export, and SCF initial guesses.
 - **CUBE utilities** — `CubeGrid` and `becke_grid` for sampling fields on
   grids; `write_density_cube`, `write_esp_cube`, `write_esp_error_cube` and
   `write_cube` for Gaussian CUBE export, `read_cube` for the round trip.
+- **Scattering** — `structure_factors` (analytic Fourier transform of the RI
+  density, with Debye–Waller factors), `atomic_form_factors` (aspherical
+  per-atom form factors, RI or Hirshfeld partition), `electron_structure_factors`
+  (Mott–Bethe, for electron diffraction), `hkl_to_q`, and `write_tsc` for
+  NoSpherA2/Olex2 Hirshfeld atom refinement.
 - **Provenance** — `file_fingerprint` and `model_provenance` identify the model
   a result came from by content hash rather than by path.
 - **SCF bridge** — `dm_from_auxdensity` builds a one-diagonalization initial
