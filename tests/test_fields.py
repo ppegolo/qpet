@@ -223,3 +223,39 @@ class TestEffectiveCorePotential:
             pts, fast=False
         )
         assert np.allclose(total, parts, atol=1e-10)
+
+
+def test_with_periodic_images_makes_the_density_periodic(water_ri):
+    """A molecule in a box: with images, ρ(p) equals ρ(p + lattice vector)."""
+    import numpy as np
+
+    from qpet import RIDensity
+
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    cell = 5.0 * np.eye(3)
+    periodic = rho.with_periodic_images(cell)
+    assert periodic.auxmol.natm == 27 * auxmol.natm
+    assert periodic.coeffs.shape == (27 * auxmol.nao,)
+    pts = np.array([[0.3, 0.2, 0.1], [-0.6, 0.4, 0.5]])
+    np.testing.assert_allclose(
+        periodic.density(pts), periodic.density(pts + cell[0]), rtol=1e-6, atol=1e-8
+    )
+    # One cell alone is not periodic: a point near the face sees the missing neighbours.
+    face = np.array([[2.4, 0.0, 0.0]])
+    assert periodic.density(face)[0] > rho.density(face)[0]
+
+
+def test_with_periodic_images_radius_selects_atoms(water_ri):
+    import numpy as np
+
+    from qpet import RIDensity
+
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    cell = 5.0 * np.eye(3)
+    local = rho.with_periodic_images(cell, centre=np.zeros(3), radius=1.0)
+    assert 1 <= local.auxmol.natm < 27 * auxmol.natm
+    # The oxygen at the origin is kept, and the density there is unchanged.
+    origin = np.zeros((1, 3))
+    np.testing.assert_allclose(local.density(origin), rho.density(origin), rtol=1e-6)

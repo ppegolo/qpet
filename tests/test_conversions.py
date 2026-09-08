@@ -99,3 +99,20 @@ def test_system_types_are_atomic_numbers_under_an_ecp():
 
     light = gto.M(atom="C 0 0 0; O 0 0 1.2", basis="def2-svp", verbose=0)
     assert pyscf_to_system(light).types.tolist() == [6, 8]
+
+
+def test_build_system_periodic_and_molecular():
+    import numpy as np
+    import torch
+
+    from qpet import build_system
+
+    numbers = np.array([8, 1, 1])
+    positions = np.array([[0.0, 0.0, 0.0], [0.757, 0.587, 0.0], [-0.757, 0.587, 0.0]])
+    mol = build_system(numbers, positions)
+    assert not bool(mol.pbc.any())
+    assert torch.count_nonzero(mol.cell) == 0
+    crystal = build_system(numbers, positions, cell=6.0 * np.eye(3))
+    assert bool(crystal.pbc.all())
+    assert crystal.cell.dtype == torch.float32
+    assert crystal.types.tolist() == [8, 1, 1]

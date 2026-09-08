@@ -148,6 +148,45 @@ def pyscf_to_system(
     return attach_conditioning(system, mol.charge, mol.spin + 1)
 
 
+def build_system(
+    types: np.ndarray,
+    positions: np.ndarray,
+    cell: np.ndarray | None = None,
+    dtype: torch.dtype | None = None,
+    device: str = "cpu",
+) -> System:
+    """
+    Build a metatomic System from arrays; periodic when a cell is given.
+
+    :param types: Atomic numbers, shape (N,).
+    :param positions: Positions in Angstrom, shape (N, 3).
+    :param cell: Lattice vectors as rows in Angstrom, shape (3, 3), for a
+        periodic system; ``None`` (or all zeros) for a molecule.
+    :param dtype: Torch dtype for positions and cell (default ``torch.float32``).
+    :param device: Torch device.
+    :return: metatomic System (no conditioning attached).
+    """
+    import torch
+    from metatomic.torch import System
+
+    if dtype is None:
+        dtype = torch.float32
+    periodic = cell is not None and np.any(np.asarray(cell) != 0)
+    cell_t = (
+        torch.tensor(np.asarray(cell, dtype=float), dtype=dtype, device=device)
+        if periodic
+        else torch.zeros((3, 3), dtype=dtype, device=device)
+    )
+    return System(
+        types=torch.tensor(np.asarray(types), dtype=torch.int32, device=device),
+        positions=torch.tensor(
+            np.asarray(positions, dtype=float), dtype=dtype, device=device
+        ),
+        cell=cell_t,
+        pbc=torch.tensor([periodic] * 3, device=device),
+    )
+
+
 def system_to_pyscf(
     system: System,
     basis: str,

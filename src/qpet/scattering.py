@@ -47,6 +47,8 @@ from .partition import FragmentDensity, free_atom_density
 
 __all__ = [
     "hkl_to_q",
+    "spherical_atom_form_factor",
+    "independent_atom_structure_factors",
     "debye_waller",
     "structure_factors",
     "atomic_form_factors",
@@ -282,6 +284,69 @@ def electron_structure_factors(
     with np.errstate(invalid="ignore", divide="ignore"):
         out = 4.0 * np.pi * (nuclear - electronic) / q2_bohr
     out[q2_bohr == 0] = np.nan
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Independent atom model
+# --------------------------------------------------------------------------- #
+
+
+def spherical_atom_form_factor(
+    z: int, q_norm: np.ndarray, *, ecp: str | None = None
+) -> np.ndarray:
+    """
+    Form factor of the spherical free atom, ``f(q) = 4π ∫ ρ(r) r² sin(qr)/(qr) dr``.
+
+    The atom is the tabulated Hartree--Fock free atom behind
+    :func:`qpet.partition.free_atom_density`, so the independent atom model
+    built from it is the Fourier transform of the Hirshfeld promolecule.
+
+    :param z: Atomic number.
+    :param q_norm: ``|q|`` in Å⁻¹ (with the ``2π``), any shape.
+    :param ecp: ECP of the free atom, see :func:`~qpet.partition.free_atom_density`.
+    :return: Form factor in electrons, same shape as ``q_norm``.
+    """
+    r = np.geomspace(1e-4, 20.0, 4000)  # Bohr
+    rho = free_atom_density(z, r, ecp=ecp)
+    q_bohr = np.asarray(q_norm, dtype=float).reshape(-1) * BOHR_TO_ANG
+    qr = np.outer(q_bohr, r)
+    kernel = np.ones_like(qr)
+    nonzero = qr > 1e-12
+    kernel[nonzero] = np.sin(qr[nonzero]) / qr[nonzero]
+    f = 4.0 * np.pi * np.trapezoid(kernel * (rho * r**2)[None, :], r, axis=1)
+    return np.asarray(np.reshape(f, np.shape(q_norm)))
+
+
+def independent_atom_structure_factors(
+    atomic_numbers: np.ndarray,
+    positions: np.ndarray,
+    q: np.ndarray,
+    *,
+    adps: np.ndarray | None = None,
+    ecp: str | None = None,
+) -> np.ndarray:
+    """
+    Structure factors of the independent atom model (spherical free atoms).
+
+    :param atomic_numbers: Shape (natm,).
+    :param positions: Atomic positions in Å, shape (natm, 3).
+    :param q: Scattering vectors in Å⁻¹, shape (N, 3).
+    :param adps: Displacement parameters, see :func:`debye_waller`.
+    :param ecp: ECP of the free atoms.
+    :return: Complex structure factors in electrons, shape (N,).
+    """
+    q = np.atleast_2d(np.asarray(q, dtype=float))
+    numbers = np.asarray(atomic_numbers)
+    positions = np.asarray(positions, dtype=float)
+    q_norm = np.linalg.norm(q, axis=1)
+    t = debye_waller(q, adps, len(numbers))
+    phase = np.exp(1j * (q @ positions.T))
+    out = np.zeros(len(q), dtype=complex)
+    for z in np.unique(numbers):
+        sel = numbers == z
+        f = spherical_atom_form_factor(int(z), q_norm, ecp=ecp)
+        out += f * (t[:, sel] * phase[:, sel]).sum(axis=1)
     return out
 
 

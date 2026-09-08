@@ -144,3 +144,52 @@ def test_tsc_round_trip(tmp_path, water):
     assert header[4] == "DATA:"
     with pytest.raises(ValueError, match="does not match"):
         write_tsc(path, hkl, f, ["O1"])
+
+
+def test_spherical_atom_form_factor_is_electron_count_at_zero_q():
+    from qpet.scattering import spherical_atom_form_factor
+
+    for z in (1, 6, 8):
+        assert spherical_atom_form_factor(z, np.zeros(1))[0] == pytest.approx(
+            z, rel=2e-3
+        )
+    f = spherical_atom_form_factor(8, np.array([0.0, 5.0, 10.0]))
+    assert f[0] > f[1] > f[2] > 0
+
+
+def test_independent_atom_structure_factors_match_promolecule_transform(
+    water, q_vectors
+):
+    from qpet.partition import free_atom_density
+    from qpet.scattering import independent_atom_structure_factors
+
+    _, _, rho = water
+    numbers, positions = rho.atomic_numbers, rho.positions
+    analytic = independent_atom_structure_factors(numbers, positions, q_vectors)
+    # Numerical transform of the promolecule on a Becke grid.
+    grid = becke_grid(rho.auxmol, level=4)
+    pts_bohr = grid.points / BOHR_TO_ANG
+    promol = np.zeros(len(grid.points))
+    for z, pos in zip(numbers, positions, strict=True):
+        promol += free_atom_density(
+            int(z), np.linalg.norm(pts_bohr - pos / BOHR_TO_ANG, axis=1)
+        )
+    numerical = np.exp(1j * (q_vectors @ grid.points.T)) @ (promol * grid.weights)
+    np.testing.assert_allclose(analytic, numerical, rtol=2e-2, atol=2e-2)
+    assert analytic[np.linalg.norm(q_vectors, axis=1).argmin()].real == pytest.approx(
+        10.0, rel=5e-2
+    )
+
+
+def test_independent_atom_structure_factors_debye_waller(water, q_vectors):
+    from qpet.scattering import independent_atom_structure_factors
+
+    _, _, rho = water
+    rigid = independent_atom_structure_factors(
+        rho.atomic_numbers, rho.positions, q_vectors
+    )
+    smeared = independent_atom_structure_factors(
+        rho.atomic_numbers, rho.positions, q_vectors, adps=np.full(3, 0.02)
+    )
+    q2 = np.einsum("ni,ni->n", q_vectors, q_vectors)
+    np.testing.assert_allclose(smeared, rigid * np.exp(-0.5 * 0.02 * q2))
