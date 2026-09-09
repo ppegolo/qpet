@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from pyscf.gto import ft_ao
@@ -239,3 +241,33 @@ def test_adp_cif_to_cartesian_matches_reciprocal_axis_exponent():
     # Orthorhombic cell: identity.
     ortho = np.diag([5.93, 12.26, 5.79])
     np.testing.assert_allclose(adp_cif_to_cartesian(u_cif, ortho), u_cif)
+
+
+def test_predict_coefficients_torch_matches_the_numpy_path():
+    """Same coefficients as the numpy path, and a gradient to the positions."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("metatomic")
+    model_path = Path(__file__).resolve().parents[3] / "models" / "pet-omol25-bio.pt"
+    if not model_path.exists():
+        pytest.skip("no density model checkpoint in the workspace")
+
+    from qpet import DensityModel, build_system
+
+    numbers = np.array([8, 1, 1])
+    positions = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+    model = DensityModel(
+        str(model_path),
+        head="mtt::rho_c_jfit_coulomb",
+        aux_basis="def2-universal-jfit",
+        basis="def2-svp",
+        backend="metatomic",
+        device="cpu",
+    )
+    reference = model.predict_systems(build_system(numbers, positions))[0].coeffs
+    tensor_positions = torch.tensor(positions, dtype=torch.float64, requires_grad=True)
+    coefficients = model.predict_coefficients_torch(numbers, tensor_positions)
+    assert coefficients.shape == reference.shape
+    assert np.abs(coefficients.detach().numpy() - reference).max() < 1e-5
+    gradient, = torch.autograd.grad(coefficients.sum(), tensor_positions)
+    assert gradient.shape == tensor_positions.shape
+    assert float(gradient.abs().max()) > 0.0

@@ -126,20 +126,24 @@ def _check_coefficient_count(
     )
 
 
-def _tensormap_to_pyscf_coefficients(
+def _tensormap_to_pyscf_tensors(
     tensor: TensorMap,
-) -> list[np.ndarray]:
+) -> list[torch.Tensor]:
     """
-    Convert a TensorMap to a list of numpy arrays for PySCF.
+    Convert a TensorMap to a list of torch tensors in PySCF order, one per system.
+
+    The tensors keep whatever autograd graph the model built, which is
+    what :meth:`DensityModel.predict_coefficients_torch` needs; the numpy
+    wrapper below detaches.
 
     Extracts coefficient values from TensorMap format and converts them to the ordering
     expected by PySCF, handling angular momentum component reordering for p-orbitals.
 
     :param tensor: TensorMap containing density fitting coefficients with keys indexed
         by angular momentum, inversion parity, and atomic species.
-    :return: List of numpy arrays, one per system, containing the coefficient values
-        sorted by atom index, angular momentum, radial channel, and magnetic quantum
-        number
+    :return: List of tensors, one per system, with the coefficients sorted
+        by atom index, angular momentum, radial channel and magnetic quantum
+        number.
     """
     import torch
 
@@ -217,7 +221,17 @@ def _tensormap_to_pyscf_coefficients(
     # torch.tensor_split requires the boundary indices on CPU
     result_tuple = torch.tensor_split(val_sorted, changes.cpu())
 
-    return [res.detach().cpu().numpy() for res in result_tuple]
+    return list(result_tuple)
+
+
+def _tensormap_to_pyscf_coefficients(tensor: TensorMap) -> list[np.ndarray]:
+    """PySCF-ordered coefficients as numpy arrays, one per system."""
+    import torch
+
+    return [
+        res.detach().cpu().to(torch.float64).numpy()
+        for res in _tensormap_to_pyscf_tensors(tensor)
+    ]
 
 
 def _require_petfast() -> Any:
@@ -636,6 +650,80 @@ class DensityModel:
             RIDensity(auxmol, coeffs)
             for auxmol, coeffs in zip(auxmols, coeffs_list, strict=True)
         ]
+
+    def predict_coefficients_torch(
+        self,
+        atomic_numbers,
+        positions,
+        cell=None,
+        *,
+        charge: int = 0,
+        spin: int | None = None,
+    ):
+        """
+        RI coefficients as a torch tensor keeping the graph to ``positions``.
+
+        The numpy path (:meth:`predict_systems`) detaches, which is what most
+        callers want. This one is for differentiating a property of the density
+        with respect to the geometry -- the derivative of a structure factor,
+        say. Only the metatomic backend is supported.
+
+        The charge correction uses the direction of the input geometry: the
+        integrals ``∫χ_P`` do not depend on where the functions sit, so for the
+        default ``identity`` metric this is exact, while ``coulomb`` neglects
+        the geometry dependence of ``J = (P|Q)``.
+
+        :param atomic_numbers: Shape (natm,).
+        :param positions: Torch tensor of Cartesian positions in Å, shape
+            (natm, 3); set ``requires_grad_()`` on it before calling.
+        :param cell: Lattice vectors as rows in Å, ``None`` if isolated.
+        :return: Coefficients in PySCF order, shape (naux,).
+        """
+        import torch
+
+        from .conversions import build_system
+        from .moments import _coulomb_direction, compute_S_vector
+
+        if self.backend != "metatomic":
+            raise ValueError("predict_coefficients_torch needs the metatomic backend")
+        if self._loaded_model is None:
+            raise ValueError("no loaded model to differentiate")
+
+        numbers = np.asarray(atomic_numbers)
+        reference = positions.detach().cpu().to(torch.float64).numpy()
+        system = build_system(numbers, reference, cell)
+        mol = system_to_pyscf(
+            system, basis=self.basis, charge=charge, spin=spin, ecp=self.ecp
+        )
+        auxmol = make_auxmol(mol, self.aux_basis)
+        attach_conditioning(system, mol.charge, mol.spin + 1)
+
+        system = system.to(device=self._device, dtype=self._dtype)
+        system.positions = positions.to(device=self._device, dtype=self._dtype)
+        for nl in self._nl_calculators:
+            nl.add_neighbor_list(systems=[system])
+        outputs = self._loaded_model([system], self._options, False)
+        tensors = _tensormap_to_pyscf_tensors(outputs[self._head])
+        coefficients = tensors[0].to(torch.float64)
+
+        if self.normalize_charge:
+            s_vec = torch.as_tensor(
+                compute_S_vector(auxmol), dtype=torch.float64
+            )
+            target = electron_count(mol) + self.charge_offset
+            shift = target - s_vec @ coefficients
+            limit = self._max_shift(electron_count(mol))
+            if limit is None or abs(float(shift)) <= limit:
+                direction = s_vec
+                if self.charge_metric == "coulomb":
+                    direction = torch.as_tensor(
+                        _coulomb_direction(
+                            auxmol.intor("int2c2e"), compute_S_vector(auxmol), None
+                        ),
+                        dtype=torch.float64,
+                    )
+                coefficients = coefficients + (shift / (s_vec @ direction)) * direction
+        return coefficients
 
     def _max_shift(self, n_electrons: float) -> float | None:
         """The projection guard for a system of this size, in electrons."""
