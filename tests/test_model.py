@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import warnings
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -448,3 +449,51 @@ def test_charge_guard_scales_with_the_electron_count():
 
     model.charge_guard = None
     assert model._max_shift(3150) is None
+
+
+
+def test_predict_coefficients_torch_matches_numpy_and_finite_differences():
+    """Same coefficients as the numpy path, and a gradient to the positions."""
+    pytest.importorskip("metatomic")
+    model_path = Path(__file__).resolve().parents[3] / "models" / "pet-omol25-bio.pt"
+    if not model_path.exists():
+        pytest.skip("no density model checkpoint in the workspace")
+
+    from qpet import build_system
+
+    numbers = np.array([8, 1, 1])
+    positions = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+    model = DensityModel(
+        str(model_path),
+        head=HEAD,
+        aux_basis="def2-universal-jfit",
+        basis="def2-svp",
+        backend="metatomic",
+        device="cpu",
+    )
+    reference = model.predict_systems(build_system(numbers, positions))[0].coeffs
+    coefficients = model.predict_coefficients_torch(numbers, torch.tensor(positions))
+    assert np.abs(coefficients.numpy() - reference).max() < 1e-5
+
+    # The Coulomb projection holds its direction at the input geometry, so the
+    # finite-difference check is on the model output alone.
+    model.normalize_charge = False
+    weights = torch.as_tensor(np.random.default_rng(0).normal(size=len(reference)))
+    displacement = np.random.default_rng(1).normal(size=positions.shape)
+    tensor_positions = torch.tensor(positions, requires_grad=True)
+    (gradient,) = torch.autograd.grad(
+        model.predict_coefficients_torch(numbers, tensor_positions) @ weights,
+        tensor_positions,
+    )
+    analytic = float((gradient * torch.as_tensor(displacement)).sum())
+    step = 1e-3
+    plus, minus = (
+        float(
+            model.predict_coefficients_torch(
+                numbers, torch.tensor(positions + sign * step * displacement)
+            )
+            @ weights
+        )
+        for sign in (1, -1)
+    )
+    assert analytic == pytest.approx((plus - minus) / (2 * step), rel=1e-3)
