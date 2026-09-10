@@ -224,6 +224,7 @@ def atomic_form_factors(
     q_batch: int = 256,
     cell: np.ndarray | None = None,
     images: int = 1,
+    device: str | None = None,
 ) -> np.ndarray:
     """
     Aspherical atomic form factors ``f_A(q)``, the Fourier transform of each
@@ -253,6 +254,11 @@ def atomic_form_factors(
         partition; ``None`` for the isolated-molecule stockholder.
     :param images: Lattice-translation range per axis for the periodic
         promolecule (default 1: the 27 surrounding cells).
+    :param device: Torch device for the Hirshfeld grid Fourier sum (e.g.
+        ``"cuda"``); ``None`` keeps it on NumPy/CPU. The sum
+        ``Σ_G e^{i q·r_G} w_A(r_G) ρ(r_G)`` over the quadrature grid is the
+        dominant cost and is a dense complex matrix product, so a GPU speeds it
+        up several-fold; the result is identical to the CPU path.
     :return: Complex form factors in electrons, shape (N, natm).
     """
     q = np.atleast_2d(np.asarray(q, dtype=float))
@@ -271,12 +277,39 @@ def atomic_form_factors(
     rho = source.density(grid.points) * grid.weights  # (G,) periodic electrons if cell
     weights = _hirshfeld_atom_weights(density, grid.points, promol_density=promol)
     weighted = rho[:, None] * weights  # (G, natm)
-    out = np.empty((len(q), positions.shape[0]), dtype=complex)
+    out = _grid_fourier_sum(q, grid.points, weighted, device=device, q_batch=q_batch)
+    return out * phase
+
+
+def _grid_fourier_sum(q, points_ang, weighted, *, device=None, q_batch=256):
+    """``Σ_G e^{i q·r_G} weighted[G, A]`` -> ``(N_q, natm)``, on ``device`` or NumPy.
+
+    The exponential and the contraction over the ~10^5 quadrature points dominate the
+    Hirshfeld form-factor cost; on a GPU this is a few dense complex matmuls. The NumPy
+    path (``device=None``) is the reference and gives an identical result.
+    """
+    if device is not None:
+        import torch
+
+        dev = torch.device(device)
+        pts = torch.as_tensor(np.ascontiguousarray(points_ang), device=dev)
+        wt = torch.as_tensor(
+            np.ascontiguousarray(weighted), dtype=torch.complex128, device=dev
+        )
+        qt = torch.as_tensor(np.ascontiguousarray(q), device=dev)
+        out = torch.empty((len(q), wt.shape[1]), dtype=torch.complex128, device=dev)
+        for start in range(0, len(q), q_batch):
+            stop = min(start + q_batch, len(q))
+            wave = torch.exp(1j * (qt[start:stop] @ pts.T))  # (n, G)
+            out[start:stop] = wave @ wt
+        return out.cpu().numpy()
+
+    out = np.empty((len(q), weighted.shape[1]), dtype=complex)
     for start in range(0, len(q), q_batch):
         stop = min(start + q_batch, len(q))
-        wave = np.exp(1j * (q[start:stop] @ grid.points.T))  # (n, G)
+        wave = np.exp(1j * (q[start:stop] @ points_ang.T))  # (n, G)
         out[start:stop] = wave @ weighted
-    return out * phase
+    return out
 
 
 def _free_atom_grid(auxmol, numbers, points_bohr, ecp):
