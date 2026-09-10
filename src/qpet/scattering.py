@@ -27,9 +27,11 @@ Conventions
 
 Two atomic partitions are offered. ``"ri"`` assigns every auxiliary function
 to the atom it is centred on (analytic, works for crystals); ``"hirshfeld"``
-divides space by the promolecule (numerical, Becke grid, molecules only — the
-grid does not know about periodic images), which is what Hirshfeld atom
-refinement uses.
+divides space by the promolecule on a Becke grid, which is what Hirshfeld atom
+refinement uses. Hirshfeld is periodic-aware: pass ``cell`` to
+:func:`atomic_form_factors` and each cell atom competes with the free-atom
+densities of the neighbouring cells (the density integrated is the periodic
+one), so a boundary atom no longer grabs a periodic neighbour's density.
 """
 
 from __future__ import annotations
@@ -220,6 +222,8 @@ def atomic_form_factors(
     partition: Partition = "ri",
     grid_level: int = 3,
     q_batch: int = 256,
+    cell: np.ndarray | None = None,
+    images: int = 1,
 ) -> np.ndarray:
     """
     Aspherical atomic form factors ``f_A(q)``, the Fourier transform of each
@@ -231,11 +235,24 @@ def atomic_form_factors(
     ``Σ_A f_A(q) e^{i q·R_A}`` is the structure factor (exactly for ``"ri"``,
     to grid accuracy for ``"hirshfeld"``).
 
+    For a **periodic** cell pass ``cell`` (lattice vectors as rows, Å): the
+    Hirshfeld stockholder then competes each cell atom against the free-atom
+    densities of the neighbouring cells (``±images`` translations), and the
+    density integrated is the periodic one, so an atom near a cell face no
+    longer grabs density that belongs to a periodic neighbour. Without ``cell``
+    the stockholder is the isolated-molecule one (the Becke grid does not know
+    about images), which is only right when the molecule is well separated in
+    the cell. ``cell`` has no effect on the ``"ri"`` partition (already exact).
+
     :param density: :class:`~qpet.RIDensity` or fragment thereof.
     :param q: Scattering vectors in Å⁻¹, shape (N, 3).
     :param partition: ``"ri"`` (default) or ``"hirshfeld"``.
     :param grid_level: PySCF grid level of the Hirshfeld quadrature.
     :param q_batch: Scattering vectors per chunk of the Hirshfeld integral.
+    :param cell: Lattice vectors as rows (Å) for a periodic Hirshfeld
+        partition; ``None`` for the isolated-molecule stockholder.
+    :param images: Lattice-translation range per axis for the periodic
+        promolecule (default 1: the 27 surrounding cells).
     :return: Complex form factors in electrons, shape (N, natm).
     """
     q = np.atleast_2d(np.asarray(q, dtype=float))
@@ -247,8 +264,12 @@ def atomic_form_factors(
         raise ValueError(f"unknown partition {partition!r}; use 'ri' or 'hirshfeld'")
 
     grid = becke_grid(density.auxmol, level=grid_level)
-    rho = density.density(grid.points) * grid.weights  # (G,), electrons
-    weights = _hirshfeld_atom_weights(density, grid.points)  # (G, natm)
+    promol = None
+    if cell is not None:
+        promol = density.with_periodic_images(np.asarray(cell), images=images)
+    source = promol if promol is not None else density
+    rho = source.density(grid.points) * grid.weights  # (G,) periodic electrons if cell
+    weights = _hirshfeld_atom_weights(density, grid.points, promol_density=promol)
     weighted = rho[:, None] * weights  # (G, natm)
     out = np.empty((len(q), positions.shape[0]), dtype=complex)
     for start in range(0, len(q), q_batch):
@@ -258,21 +279,39 @@ def atomic_form_factors(
     return out * phase
 
 
-def _hirshfeld_atom_weights(density: Density, points_ang: np.ndarray) -> np.ndarray:
-    """Per-atom stockholder weights at points, shape (G, natm)."""
+def _free_atom_grid(auxmol, numbers, points_bohr, ecp):
+    """Free-atom densities of every atom of ``auxmol`` at the points: (G, natm)."""
+    centres = auxmol.atom_coords()
+    free = np.empty((len(points_bohr), len(centres)))
+    for a, (centre, z) in enumerate(zip(centres, np.asarray(numbers), strict=True)):
+        dist = np.linalg.norm(points_bohr - centre, axis=1)
+        free[:, a] = free_atom_density(int(z), dist, ecp=ecp)
+    return free
+
+
+def _hirshfeld_atom_weights(
+    density: Density, points_ang: np.ndarray, promol_density: Density | None = None
+) -> np.ndarray:
+    """Stockholder weights at the points, shape (G, natm), for the atoms of ``density``.
+
+    The numerator is each ``density`` atom's free-atom density; the denominator is the
+    promolecule sum. With ``promol_density`` (a periodic supercell of the same
+    coefficients) the denominator runs over the neighbouring cells too, so a cell atom
+    competes with its periodic neighbours rather than overreaching into them.
+    """
     auxmol = density.auxmol
     ecp = auxmol.ecp if auxmol.ecp else None
     points = np.asarray(points_ang) / BOHR_TO_ANG
-    centres = auxmol.atom_coords()
-    numbers = np.asarray(density.atomic_numbers)
-    free = np.empty((len(points), len(centres)))
-    for a, (centre, z) in enumerate(zip(centres, numbers, strict=True)):
-        free[:, a] = free_atom_density(
-            int(z), np.linalg.norm(points - centre, axis=1), ecp=ecp
+    numerator = _free_atom_grid(auxmol, density.atomic_numbers, points, ecp)
+    if promol_density is None:
+        total = numerator.sum(axis=1, keepdims=True)
+    else:
+        denom = _free_atom_grid(
+            promol_density.auxmol, promol_density.atomic_numbers, points, ecp
         )
-    total = free.sum(axis=1, keepdims=True)
+        total = denom.sum(axis=1, keepdims=True)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(total > 0, free / total, 1.0 / len(centres))
+        return np.where(total > 0, numerator / total, 1.0 / numerator.shape[1])
 
 
 def structure_factors_from_form_factors(
