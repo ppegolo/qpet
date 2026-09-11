@@ -244,11 +244,21 @@ def test_adp_cif_to_cartesian_matches_reciprocal_axis_exponent():
     from qpet.scattering import adp_cif_to_cartesian, cell_from_parameters, debye_waller
 
     cell = cell_from_parameters(4.726, 9.369, 10.239, 88.796, 85.14, 78.90)
-    u_cif = np.array([[0.0313, 0.0237, -0.0041], [0.0237, 0.0670, -0.0073], [-0.0041, -0.0073, 0.0174]])
+    u_cif = np.array(
+        [
+            [0.0313, 0.0237, -0.0041],
+            [0.0237, 0.0670, -0.0073],
+            [-0.0041, -0.0073, 0.0174],
+        ]
+    )
     hkl = np.array([[1, 0, 0], [0, 2, -1], [3, -1, 2], [-2, 4, 5]], dtype=float)
     a, b, c = cell
-    recip = np.linalg.norm([np.cross(b, c), np.cross(c, a), np.cross(a, b)], axis=1) / (a @ np.cross(b, c))
-    reference = np.exp(-2 * np.pi**2 * np.einsum("ni,ij,nj->n", hkl * recip, u_cif, hkl * recip))
+    recip = np.linalg.norm([np.cross(b, c), np.cross(c, a), np.cross(a, b)], axis=1) / (
+        a @ np.cross(b, c)
+    )
+    reference = np.exp(
+        -2 * np.pi**2 * np.einsum("ni,ij,nj->n", hkl * recip, u_cif, hkl * recip)
+    )
     q = hkl_to_q(hkl, cell)
     ours = debye_waller(q, adp_cif_to_cartesian(u_cif, cell)[None], 1)[:, 0]
     np.testing.assert_allclose(ours, reference, rtol=1e-12)
@@ -282,6 +292,6 @@ def test_predict_coefficients_torch_matches_the_numpy_path():
     coefficients = model.predict_coefficients_torch(numbers, tensor_positions)
     assert coefficients.shape == reference.shape
     assert np.abs(coefficients.detach().numpy() - reference).max() < 1e-5
-    gradient, = torch.autograd.grad(coefficients.sum(), tensor_positions)
+    (gradient,) = torch.autograd.grad(coefficients.sum(), tensor_positions)
     assert gradient.shape == tensor_positions.shape
     assert float(gradient.abs().max()) > 0.0
