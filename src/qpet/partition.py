@@ -52,7 +52,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["FragmentDensity", "HirshfeldSplit", "free_atom_density"]
+__all__ = [
+    "FragmentDensity",
+    "HirshfeldSplit",
+    "free_atom_densities",
+    "free_atom_density",
+    "free_atom_radial_table",
+]
 
 #: Orbital basis of the free-atom calculations behind the promolecular weights.
 FREE_ATOM_BASIS = "def2-svp"
@@ -77,13 +83,13 @@ def _free_atom_table(z: int, ecp: str | None) -> tuple[np.ndarray, np.ndarray]:
         atom=f"{symbol} 0 0 0", basis=FREE_ATOM_BASIS, ecp=ecp, spin=None, verbose=0
     )
     with warnings.catch_warnings():
-        # PySCF's atomic solver still calls its own deprecated linear-dependence
-        # helper; nothing here to act on.
+        # PySCF's atomic solver still calls its own deprecated linear-dependence helper;
+        # nothing here to act on.
         warnings.simplefilter("ignore", DeprecationWarning)
         _, _, mo_coeff, mo_occ = atom_hf.get_atm_nrhf(mol)[symbol]
     dm = (mo_coeff * mo_occ) @ mo_coeff.T
-    # Dense near the nucleus, linear beyond: interpolation stays a plain
-    # ``np.interp`` on r, the hot loop of the partition.
+    # Dense near the nucleus, linear beyond: interpolation stays a plain ``np.interp``
+    # on r, the hot loop of the partition.
     radii = np.concatenate(
         [np.linspace(0.0, 1.0, 2001)[:-1], np.linspace(1.0, 20.0, 7601)]
     )
@@ -113,6 +119,45 @@ def free_atom_density(
     """
     radii, rho = _free_atom_table(int(z), ecp)
     return np.interp(np.asarray(distances_bohr, dtype=float), radii, rho, right=0.0)
+
+
+def free_atom_radial_table(
+    z: int, *, ecp: str | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    The tabulated free-atom radial density behind :func:`free_atom_density`.
+
+    ``(radii, rho)`` in Bohr and electrons / Bohr^3, on the same radial grid for every
+    element,
+    for callers that want to do the interpolation themselves (on a GPU, say).
+    """
+    return _free_atom_table(int(z), ecp)
+
+
+def free_atom_densities(
+    numbers: np.ndarray, distances_bohr: np.ndarray, *, ecp: str | None = None
+) -> np.ndarray:
+    """
+    Free-atom densities of many centres at many points in one call.
+
+    The column-by-column equivalent of :func:`free_atom_density`, but the
+    interpolation is done once per *element* rather than once per atom, which is
+    what makes the Hirshfeld grid partition affordable on a protein-sized cell.
+
+    :param numbers: Atomic number of every centre, shape (M,).
+    :param distances_bohr: Distance of every point from every centre, shape
+        (N, M), Bohr.
+    :param ecp: ECP of the free atoms, see :func:`free_atom_density`.
+    :return: Density in electrons / Bohr^3, shape (N, M).
+    """
+    numbers = np.asarray(numbers, dtype=int)
+    distances_bohr = np.asarray(distances_bohr, dtype=float)
+    out = np.empty(distances_bohr.shape)
+    for z in np.unique(numbers):
+        radii, rho = _free_atom_table(int(z), ecp)
+        columns = numbers == z
+        out[:, columns] = np.interp(distances_bohr[:, columns], radii, rho, right=0.0)
+    return out
 
 
 def hirshfeld_weights(
@@ -283,8 +328,8 @@ class HirshfeldSplit:
         self._centres_bohr = auxmol.atom_coords()
 
         centres = auxmol.atom_coords(unit="Ang")
-        # Cells worth visiting: atoms close enough to the other fragment for
-        # their cell to reach the overlap zone.
+        # Cells worth visiting: atoms close enough to the other fragment for their cell
+        # to reach the overlap zone.
         candidate = np.zeros(n_atoms, dtype=bool)
         candidate[a] = _pairwise_within(centres[a], centres[b], cell_radius)
         candidate[b] = _pairwise_within(centres[b], centres[a], cell_radius)
@@ -297,9 +342,9 @@ class HirshfeldSplit:
             self._finish()
             return
 
-        # Every promolecular density that can matter on a visited cell belongs
-        # to an atom within neighbour_radius of it; every function, within
-        # function_radius. Both neighbourhoods are cheap to enumerate.
+        # Every promolecular density that can matter on a visited cell belongs to an
+        # atom within neighbour_radius of it; every function, within function_radius.
+        # Both neighbourhoods are cheap to enumerate.
         environment = _pairwise_within(centres, centres[candidate], neighbour_radius)
         self.environment_atoms = np.flatnonzero(environment)
         grids = dft.gen_grid.Grids(auxmol)

@@ -31,6 +31,7 @@ from .cube import (
     BeckeGrid,
     CubeData,
     CubeGrid,
+    atomic_grids,
     becke_grid,
     read_cube,
     write_cube,
@@ -60,7 +61,12 @@ from .moments import (
     get_ri_quadrupole,
     normalize_charge_additive,
 )
-from .partition import FragmentDensity, HirshfeldSplit, free_atom_density
+from .partition import (
+    FragmentDensity,
+    HirshfeldSplit,
+    free_atom_densities,
+    free_atom_density,
+)
 from .provenance import (
     Fingerprint,
     file_fingerprint,
@@ -93,6 +99,7 @@ __all__ = [
     "RIDensity",
     "FragmentDensity",
     "HirshfeldSplit",
+    "free_atom_densities",
     "free_atom_density",
     "free_atom_volume",
     "coulomb_interaction_energy",
@@ -145,6 +152,7 @@ __all__ = [
     "read_cube",
     "CubeData",
     "CubeGrid",
+    "atomic_grids",
     "becke_grid",
     "BeckeGrid",
     "BOHR_TO_ANG",

@@ -59,6 +59,33 @@ def becke_grid(mol: gto.Mole, level: int = 3) -> BeckeGrid:
     return BeckeGrid(points=grids.coords * BOHR_TO_ANG, weights=grids.weights)
 
 
+def atomic_grids(
+    mol: gto.Mole, level: int = 3
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """
+    Single-centre quadrature grids, one per element, *without* the Becke partition.
+
+    A Becke grid exists to divide a molecular integral among atomic centres, and
+    building it costs ``O(N_points x N_atoms)`` because every point is weighted
+    against every atom. An integral that is already atomic -- a Hirshfeld atom's
+    density, say, which the stockholder weight confines to one centre -- does not
+    need that partition, and can be integrated on the atom's own radial x Lebedev
+    grid instead, which is built once per element.
+
+    :param mol: Built PySCF ``Mole``.
+    :param level: PySCF grid level (higher = denser; default 3).
+    :return: ``symbol -> (offsets, weights)``, offsets from the nucleus in Angstrom and
+        quadrature weights in Bohr^3.
+    """
+    from pyscf.dft import gen_grid
+
+    table = gen_grid.gen_atomic_grids(mol, level=level)
+    return {
+        symbol: (coords * BOHR_TO_ANG, weights)
+        for symbol, (coords, weights) in table.items()
+    }
+
+
 @dataclass(frozen=True)
 class CubeData:
     """Parsed contents of a Gaussian CUBE file (geometry in Bohr)."""

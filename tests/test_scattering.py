@@ -129,6 +129,20 @@ def test_electron_structure_factors_mott_bethe(water, q_vectors):
     assert np.isnan(electron_structure_factors(rho, np.zeros((1, 3)))[0])
 
 
+def test_electron_atomic_form_factors_sum_to_total(water, q_vectors):
+    """The per-atom potential form factors, summed with the nuclear phases, are the total."""
+    from qpet.scattering import (
+        electron_atomic_form_factors,
+        structure_factors_from_form_factors,
+    )
+
+    _, _, rho = water
+    fe = electron_atomic_form_factors(rho, q_vectors)
+    assert fe.shape == (len(q_vectors), rho.positions.shape[0])
+    summed = structure_factors_from_form_factors(fe, q_vectors, rho.positions)
+    np.testing.assert_allclose(summed, electron_structure_factors(rho, q_vectors))
+
+
 def test_tsc_round_trip(tmp_path, water):
     _, _, rho = water
     hkl = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [2, 1, 3]])
