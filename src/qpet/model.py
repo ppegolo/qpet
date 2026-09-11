@@ -477,6 +477,12 @@ class DensityModel:
             for options in self._neighbor_list_options
         ]
 
+    @property
+    def device(self):
+        """The torch device the model and its tensors live on (``predict_coefficients_torch``
+        returns its coefficients here, keeping the graph to the input positions)."""
+        return self._device
+
     def _init_petfast(
         self,
         model: Any,
@@ -708,7 +714,7 @@ class DensityModel:
 
         if self.normalize_charge:
             s_vec = torch.as_tensor(
-                compute_S_vector(auxmol), dtype=torch.float64
+                compute_S_vector(auxmol), dtype=torch.float64, device=coefficients.device
             )
             target = electron_count(mol) + self.charge_offset
             shift = target - s_vec @ coefficients
@@ -721,6 +727,7 @@ class DensityModel:
                             auxmol.intor("int2c2e"), compute_S_vector(auxmol), None
                         ),
                         dtype=torch.float64,
+                        device=coefficients.device,
                     )
                 coefficients = coefficients + (shift / (s_vec @ direction)) * direction
         return coefficients
