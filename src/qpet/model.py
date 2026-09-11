@@ -707,7 +707,9 @@ class DensityModel:
 
         if self.normalize_charge:
             s_vec = torch.as_tensor(
-                compute_S_vector(auxmol), dtype=torch.float64, device=coefficients.device
+                compute_S_vector(auxmol),
+                dtype=torch.float64,
+                device=coefficients.device,
             )
             target = electron_count(mol) + self.charge_offset
             shift = target - s_vec @ coefficients
