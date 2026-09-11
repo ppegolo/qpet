@@ -328,9 +328,10 @@ def atomic_form_factors(
     """
     q = np.atleast_2d(np.asarray(q, dtype=float))
     positions = _positions_ang(density)
-    phase = np.exp(-1j * (q @ positions.T))  # (N, natm), removes e^{i q·R_A}
     if partition == "ri":
-        return _ri_atomic_terms(density, q) * phase
+        out = _ri_atomic_terms(density, q)
+        out *= np.exp(-1j * (q @ positions.T))  # removes e^{i q·R_A}
+        return out
     if partition != "hirshfeld":
         raise ValueError(f"unknown partition {partition!r}; use 'ri' or 'hirshfeld'")
 
@@ -355,7 +356,6 @@ def atomic_form_factors(
             source,
             promol,
             positions,
-            phase,
             grid_level=grid_level,
             cutoff=cutoff,
             rho_min=rho_min,
@@ -366,6 +366,8 @@ def atomic_form_factors(
     if quadrature != "becke":
         raise ValueError(f"unknown quadrature {quadrature!r}; use 'becke' or 'atomic'")
 
+    # Only the shared-grid paths below need the phase as a whole array.
+    phase = np.exp(-1j * (q @ positions.T))  # (N, natm), removes e^{i q·R_A}
     grid = becke_grid(density.auxmol, level=grid_level)
 
     if cutoff is None:
@@ -810,7 +812,6 @@ def _hirshfeld_atomic(
     source: Density,
     promol: Density | None,
     positions: np.ndarray,
-    phase: np.ndarray,
     *,
     grid_level: int,
     cutoff: float,
@@ -831,6 +832,10 @@ def _hirshfeld_atomic(
     The quadrature is sound because ``w_A`` is tiny wherever another nucleus sits --
     ``rho_A^0(R_B) / rho_B^0(R_B)`` is ~1e-4 or less -- so the integrand carries no
     cusp but its own, which a single-centre radial x Lebedev grid is built to resolve.
+
+    The centre phase is applied one column at a time rather than as a whole
+    ``(n_refl, natm)`` array: for a protein cell against a full reflection list
+    that array is several GB, and it is only ``exp(-i q.R_A)`` per atom.
     """
     from scipy.spatial import cKDTree
 
@@ -898,8 +903,8 @@ def _hirshfeld_atomic(
             device=device,
             q_batch=q_batch,
             dtype=dtype,
-        )[:, 0]
-    return out * phase
+        )[:, 0] * np.exp(-1j * (q @ centre))
+    return out
 
 
 def _hirshfeld_local(
@@ -1243,17 +1248,24 @@ def write_tsc(
             f"form_factors shape {ff.shape} does not match {len(hkl)} reflections "
             f"× {len(labels)} atoms"
         )
-    lines = [
-        f"TITLE: {title}",
-        "SYMM: expanded",
-        "AD: FALSE",
-        "SCATTERERS: " + " ".join(labels),
-        "DATA:",
-    ]
-    for (h, k, l_), row in zip(hkl, ff, strict=True):
-        values = " ".join(f"{v.real:.8e},{v.imag:.8e}" for v in row)
-        lines.append(f"{int(h)} {int(k)} {int(l_)} {values}")
-    Path(path).write_text("\n".join(lines) + "\n")
+    # One C-level format call per reflection, streamed: a protein table is 10^5
+    # reflections by 10^3 atoms, and formatting that value by value in Python --
+    # then joining the whole file in memory before writing -- costs minutes and
+    # twice the file in RAM.
+    template = "%d %d %d " + " ".join(["%.8e,%.8e"] * len(labels)) + "\n"
+    interleaved = np.empty(2 * len(labels))
+    with Path(path).open("w") as handle:
+        handle.write(
+            f"TITLE: {title}\n"
+            "SYMM: expanded\n"
+            "AD: FALSE\n"
+            "SCATTERERS: " + " ".join(labels) + "\n"
+            "DATA:\n"
+        )
+        for (h, k, l_), row in zip(hkl, ff, strict=True):
+            interleaved[0::2] = row.real
+            interleaved[1::2] = row.imag
+            handle.write(template % (int(h), int(k), int(l_), *interleaved))
 
 
 def read_tsc(path: str | Path) -> tuple[np.ndarray, np.ndarray, list[str]]:
