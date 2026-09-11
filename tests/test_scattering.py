@@ -130,7 +130,7 @@ def test_electron_structure_factors_mott_bethe(water, q_vectors):
 
 
 def test_electron_atomic_form_factors_sum_to_total(water, q_vectors):
-    """The per-atom potential form factors, summed with the nuclear phases, are the total."""
+    """Per-atom potential form factors sum with the nuclear phases to the total."""
     from qpet.scattering import (
         electron_atomic_form_factors,
         structure_factors_from_form_factors,
@@ -224,7 +224,7 @@ def test_cell_from_parameters_reproduces_lengths_and_angles():
 
 
 def test_hkl_to_q_triclinic_cell_phase():
-    """q·r equals 2π h·frac for a triclinic cell, with reciprocal vectors from cross products."""
+    """q·r equals 2π h·frac for a triclinic cell, reciprocal vectors from crosses."""
     from qpet.scattering import cell_from_parameters
 
     cell = cell_from_parameters(4.726, 9.369, 10.239, 88.796, 85.14, 78.90)

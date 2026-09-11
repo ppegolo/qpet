@@ -336,6 +336,11 @@ def atomic_form_factors(
 
     promol = None
     if cell is not None:
+        if not isinstance(density, RIDensity):
+            raise TypeError(
+                "a periodic Hirshfeld partition needs an RIDensity; a fragment "
+                "carries no lattice to build its images from"
+            )
         promol = density.with_periodic_images(np.asarray(cell), images=images)
     source = promol if promol is not None else density
 
@@ -1090,6 +1095,7 @@ def electron_atomic_form_factors(
     images: int = 1,
     device: str | None = None,
     dtype: str | None = None,
+    quadrature: str = "becke",
 ) -> np.ndarray:
     """
     Per-atom electron (potential) form factors ``f^e_A(q) = 4π (Z_A − f^x_A(q)) / q²``.
@@ -1131,6 +1137,7 @@ def electron_atomic_form_factors(
         images=images,
         device=device,
         dtype=dtype,
+        quadrature=quadrature,
     )
     charges = np.asarray(density.nuclear_charges, dtype=float)
     q2_bohr = np.einsum("ni,ni->n", q, q) * BOHR_TO_ANG**2

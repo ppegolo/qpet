@@ -478,9 +478,13 @@ class DensityModel:
         ]
 
     @property
-    def device(self):
-        """The torch device the model and its tensors live on (``predict_coefficients_torch``
-        returns its coefficients here, keeping the graph to the input positions)."""
+    def device(self) -> str:
+        """The torch device the model and its tensors live on, as given to the
+        constructor.
+
+        ``predict_coefficients_torch`` returns its coefficients here, keeping the
+        graph back to the input positions.
+        """
         return self._device
 
     def _init_petfast(
@@ -659,13 +663,13 @@ class DensityModel:
 
     def predict_coefficients_torch(
         self,
-        atomic_numbers,
-        positions,
-        cell=None,
+        atomic_numbers: np.ndarray,
+        positions: torch.Tensor,
+        cell: np.ndarray | None = None,
         *,
         charge: int = 0,
         spin: int | None = None,
-    ):
+    ) -> torch.Tensor:
         """
         RI coefficients as a torch tensor keeping the graph to ``positions``.
 
@@ -694,6 +698,11 @@ class DensityModel:
             raise ValueError("predict_coefficients_torch needs the metatomic backend")
         if self._loaded_model is None:
             raise ValueError("no loaded model to differentiate")
+        if self.basis is None:
+            raise ValueError(
+                "predict_coefficients_torch requires the 'basis' constructor "
+                "argument to build a PySCF molecule from a bare geometry."
+            )
 
         numbers = np.asarray(atomic_numbers)
         reference = positions.detach().cpu().to(torch.float64).numpy()
