@@ -51,6 +51,7 @@ from .interactions import (
     hirshfeld_volume_ratios,
     ts_dispersion_energy,
 )
+from .it92 import IT92, it92_form_factor
 from .model import DensityModel
 from .moments import (
     DEFAULT_CHARGE_OFFSET,
@@ -95,6 +96,8 @@ except ImportError:  # pragma: no cover - _version.py is generated at build time
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "IT92",
+    "it92_form_factor",
     "__version__",
     "RIDensity",
     "FragmentDensity",

@@ -1163,9 +1163,18 @@ def spherical_atom_form_factor(
     """
     Form factor of the spherical free atom, ``f(q) = 4π ∫ ρ(r) r² sin(qr)/(qr) dr``.
 
-    The atom is the tabulated Hartree--Fock free atom behind
+    The atom is the spherically averaged Hartree--Fock atom behind
     :func:`qpet.partition.free_atom_density`, so the independent atom model
-    built from it is the Fourier transform of the Hirshfeld promolecule.
+    built from it is the Fourier transform of the Hirshfeld promolecule, which
+    is what a deformation density must be measured against.
+
+    It is **not** the independent-atom model a refinement uses. Against the
+    tabulated values in :mod:`qpet.it92` this atom is up to 4 per cent lower for
+    light elements at intermediate angle (converged with basis set), and for
+    hydrogen 20--30 per cent lower, since the tabulated hydrogen is the
+    contracted bonded atom rather than a free one. Quote
+    :func:`qpet.it92.it92_form_factor` when the comparison is with the
+    literature, and this one when the comparison is with the promolecule.
 
     :param z: Atomic number.
     :param q_norm: ``|q|`` in Å⁻¹ (with the ``2π``), any shape.
