@@ -95,3 +95,29 @@ def test_matches_metatomic_backend(exports):
 
                 target = mol.nelectron + DEFAULT_CHARGE_OFFSET
                 assert abs(fast.charge() + target) < 1e-6
+
+
+def test_matches_metatomic_backend_periodic(exports):
+    """A tight periodic cell: petfast must include periodic images, like metatomic.
+
+    Regression for a bug where the petfast path dropped the cell (``system_to_pyscf``
+    ignores it), so petfast built a non-periodic neighbour list and silently ignored
+    every periodic image -- exact for isolated systems, wrong for crystals (the tighter
+    the cell, the larger the error). A 6 A box puts images well inside the cutoff.
+    """
+    from qpet import build_system
+    from qpet.model import DensityModel
+
+    metatomic_path, artifact_path, head = exports
+    numbers = np.array([8, 1, 1])
+    positions = np.array([[0.0, 0, 0], [0.757, 0.587, 0], [-0.757, 0.587, 0]])
+    common = dict(aux_basis=AUX_BASIS, basis="def2-svp", dtype=torch.float64)
+    reference = DensityModel(metatomic_path, head=head, **common)
+    fast = DensityModel(artifact_path, **common)
+    for box in (6.0, 9.0):
+        cell = np.eye(3) * box
+        ref = reference.predict_systems(build_system(numbers, positions, cell))[0]
+        fst = fast.predict_systems(build_system(numbers, positions, cell))[0]
+        error = np.abs(fst.coeffs - ref.coeffs).max() / np.abs(ref.coeffs).mean()
+        # ~1e-9 float64 round-off; the pre-fix bug (dropped periodic images) was ~1e-3+.
+        assert error < 1e-8, f"periodic {box} A box: {error:.2e}"
