@@ -1277,6 +1277,74 @@ def write_tsc(
             handle.write(template % (int(h), int(k), int(l_), *interleaved))
 
 
+def write_tscb(
+    path: str | Path,
+    hkl: np.ndarray,
+    form_factors: np.ndarray,
+    labels: list[str],
+    *,
+    title: str = "qpet",
+    anomalous: bool = False,
+) -> None:
+    """
+    Write per-atom form factors as a binary ``.tscb`` table for NoSpherA2 (Olex2).
+
+    The binary counterpart of :func:`write_tsc`; NoSpherA2 reads it directly (no
+    text parse), smaller and far faster than the ~GB text ``.tsc`` for a protein.
+    Byte layout matches NoSpherA2's ``tsc_block<int, cdouble>`` (little-endian),
+    from ``Src/core/tsc_block.h``::
+
+        int32   header_size
+        bytes   header            # "TITLE: <t>\\nSYMM: expanded\\nAD: FALSE"
+        int32   scatterer_bytes   # byte length of the space-joined labels
+        bytes   "l0 l1 ... lN"    # space-separated labels (no SCATTERER_IDS marker)
+        int32   reflection_count
+        per reflection: int32 h, k, l ; then per scatterer complex128 (re, im)
+
+    :param path: Output file.
+    :param hkl: Miller indices, shape (N, 3).
+    :param form_factors: Complex form factors (N, natm), scatterer order = ``labels``.
+    :param labels: Atom labels as in the refinement model, length natm.
+    :param title: Free-text title (goes in the header).
+    :param anomalous: writes ``AD: TRUE`` instead of ``AD: FALSE``.
+    """
+    import struct
+
+    hkl = np.asarray(hkl)
+    ff = np.asarray(form_factors, dtype=np.complex128)
+    if ff.shape != (len(hkl), len(labels)):
+        raise ValueError(
+            f"form_factors shape {ff.shape} does not match {len(hkl)} reflections "
+            f"× {len(labels)} atoms"
+        )
+    natm = len(labels)
+    ad = "TRUE" if anomalous else "FALSE"
+    header = f"TITLE: {title}\nSYMM: expanded\nAD: {ad}".encode()
+    scatterers = " ".join(labels).encode()
+    # one packed record/reflection: 3 int32 indices then natm*(re,im) float64
+    record = np.dtype({
+        "names": ["hkl", "ff"],
+        "formats": [("<i4", (3,)), ("<f8", (natm, 2))],
+        "offsets": [0, 12],
+        "itemsize": 12 + natm * 16,
+    })
+    hkl32 = hkl.astype("<i4", copy=False)
+    with Path(path).open("wb") as handle:
+        handle.write(struct.pack("<i", len(header)))
+        handle.write(header)
+        handle.write(struct.pack("<i", len(scatterers)))
+        handle.write(scatterers)
+        handle.write(struct.pack("<i", len(hkl)))
+        chunk = 20000  # stream so a protein table never lands in RAM whole
+        for start in range(0, len(hkl), chunk):
+            stop = min(start + chunk, len(hkl))
+            block = np.empty(stop - start, dtype=record)
+            block["hkl"] = hkl32[start:stop]
+            block["ff"][:, :, 0] = ff[start:stop].real
+            block["ff"][:, :, 1] = ff[start:stop].imag
+            handle.write(block.tobytes())
+
+
 def read_tsc(path: str | Path) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """
     Read a ``.tsc`` file written by :func:`write_tsc` (or NoSpherA2).
