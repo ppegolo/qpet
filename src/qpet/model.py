@@ -599,7 +599,16 @@ class DensityModel:
 
         outputs: dict[str, TensorMap] = {}
         if self.backend == "petfast":
-            coeffs_list = [self._petfast_coefficients(mol) for mol in mols]
+            # ``predict_systems`` supplies one System per Mole and its cell/pbc must
+            # reach petfast (see _petfast_coefficients); ``predict`` takes bare Moles
+            # and passes ``systems=[]`` -- those are molecular, so no cell is lost.
+            if len(systems) == len(mols):
+                coeffs_list = [
+                    self._petfast_coefficients(mol, system)
+                    for system, mol in zip(systems, mols, strict=True)
+                ]
+            else:
+                coeffs_list = [self._petfast_coefficients(mol) for mol in mols]
         else:
             if self.oracle_charges:
                 # Same GFN2 computation metatrain runs at training time; a failed
@@ -742,12 +751,20 @@ class DensityModel:
             return None
         return max(self.charge_guard, self.charge_guard_relative * n_electrons)
 
-    def _petfast_coefficients(self, mol: gto.Mole) -> np.ndarray:
+    def _petfast_coefficients(
+        self, mol: gto.Mole, system: System | None = None
+    ) -> np.ndarray:
         """One molecule through petfast, in PySCF auxiliary-basis order.
 
         The same extraction the metatomic path sees — positions in angstrom and
         the atomic numbers, not the ECP-reduced nuclear charges — so the two
         backends are fed identical inputs.
+
+        The periodicity travels with the ``system`` (``system_to_pyscf`` drops the
+        cell, so the ``Mole`` alone looks molecular): without it petfast builds a
+        non-periodic neighbour list and silently ignores every periodic image, so a
+        crystal comes out as the isolated cell — matching metatomic only when no
+        image falls inside the cutoff.
         """
         import torch
 
@@ -766,16 +783,30 @@ class DensityModel:
             "spin_multiplicity": int(mol.spin) + 1,
         }
 
+        cell = None
+        pbc = False
+        if system is not None:
+            cell_t = system.cell.to(dtype=self._dtype, device=self._device)
+            pbc = bool(system.pbc.any()) and bool(torch.any(cell_t != 0))
+            if pbc:
+                cell = cell_t
+
         partition = (
             self.max_atoms_per_pass is not None
             and positions.shape[0] > self.max_atoms_per_pass
         )
+        if partition and pbc:
+            raise NotImplementedError(
+                "petfast's partitioned (blocked) route has no periodic images; a "
+                "periodic system above max_atoms_per_pass needs the metatomic backend "
+                "or a smaller pass. See petfast.calculator."
+            )
         compute = (
             self._calculator.compute_partitioned
             if partition
             else self._calculator.compute
         )
-        coefficients, _ = compute(positions, types, **conditioning)
+        coefficients, _ = compute(positions, types, cell=cell, pbc=pbc, **conditioning)
         return np.asarray(
             coefficients.detach().cpu().to(torch.float64).numpy(), dtype=float
         )
