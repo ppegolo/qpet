@@ -260,16 +260,46 @@ def compute_S_vector(auxmol: gto.Mole) -> np.ndarray:
 
 #: Mean charge error of the *reference* RI fits (electrons): an unconstrained
 #: Coulomb-metric fit of a def2 density in ``def2-universal-jfit`` integrates to
-#: slightly more than the exact electron count. Measured at +0.0117 e over the
-#: labelled pocket sets; used as the default target offset at inference so the
-#: projection aims at what the references actually carry.
+#: slightly more than the exact electron count. Used as the default target
+#: offset at inference so the projection aims at what the references carry.
 DEFAULT_CHARGE_OFFSET = 0.0117
 
 
-#: Relative diagonal shift of the first regularised retry of the Coulomb
-#: solve; doubled on every further retry up to :data:`_MAX_REGULARISATION`.
+#: Relative diagonal shift of the first regularised retry of a Cholesky
+#: factorisation; doubled on every further retry up to :data:`_MAX_REGULARISATION`.
 _MIN_REGULARISATION = 1e-10
 _MAX_REGULARISATION = 1e-4
+
+#: Auxiliary-basis size from which the Coulomb direction is solved iteratively
+#: instead of by a dense factorisation of ``J``.
+ITERATIVE_COULOMB_NAUX = 10000
+
+
+def regularised_cho_factor(
+    matrix: np.ndarray, name: str = "matrix"
+) -> tuple[tuple[np.ndarray, bool], float]:
+    """
+    Cholesky factor of ``matrix + ε diag(matrix)`` with the smallest ``ε`` that works.
+
+    ``ε`` is zero, then :data:`_MIN_REGULARISATION` doubling up to
+    :data:`_MAX_REGULARISATION`: a Tikhonov shift that damps the directions in
+    which a symmetric positive semi-definite matrix is numerically singular.
+
+    :return: The factor as ``scipy.linalg.cho_factor`` gives it, and ``ε``.
+    """
+    diagonal = np.diag(matrix).copy()
+    epsilon = 0.0
+    while epsilon <= _MAX_REGULARISATION:
+        shifted = matrix.copy()
+        shifted[np.diag_indices_from(shifted)] += epsilon * diagonal
+        try:
+            return scipy.linalg.cho_factor(shifted, overwrite_a=True), epsilon
+        except np.linalg.LinAlgError:
+            epsilon = _MIN_REGULARISATION if epsilon == 0 else 2 * epsilon
+    raise np.linalg.LinAlgError(
+        f"{name} could not be factorised even with a relative diagonal shift "
+        f"of {_MAX_REGULARISATION:g}."
+    )
 
 
 def _coulomb_direction(
@@ -280,34 +310,58 @@ def _coulomb_direction(
 
     On large systems the auxiliary basis can be numerically linearly dependent
     (diffuse functions of many nearby atoms), so ``J`` is positive
-    semi-definite to working precision and the factorisation fails. A Tikhonov
-    shift ``J + ε diag(J)`` damps exactly those directions; ``ε`` starts tiny
-    and doubles until the factorisation succeeds, and a warning reports it.
+    semi-definite to working precision; a warning reports the shift used.
     """
-    try:
-        return scipy.linalg.cho_solve(scipy.linalg.cho_factor(J), S_vec)
-    except np.linalg.LinAlgError:
-        pass
-    diagonal = np.diag(J).copy()
-    epsilon = _MIN_REGULARISATION
-    while epsilon <= _MAX_REGULARISATION:
-        try:
-            factor = scipy.linalg.cho_factor(J + np.diag(epsilon * diagonal))
-        except np.linalg.LinAlgError:
-            epsilon *= 2.0
-            continue
+    name = f"Coulomb metric of {label or 'system'}"
+    factor, epsilon = regularised_cho_factor(J, name)
+    if epsilon:
         warnings.warn(
-            f"Coulomb metric of {label or 'system'} is not positive definite "
-            f"(naux={len(S_vec)}); charge projection used a relative diagonal "
-            f"shift of {epsilon:.1e}.",
+            f"{name} is not positive definite (naux={len(S_vec)}); charge "
+            f"projection used a relative diagonal shift of {epsilon:.1e}.",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+    return scipy.linalg.cho_solve(factor, S_vec)
+
+
+def charge_direction(
+    auxmol: gto.Mole,
+    S_vec: np.ndarray,
+    shift: float,
+    *,
+    metric: str = "identity",
+    max_shift: float | None = None,
+    label: str | None = None,
+    iterative: bool | None = None,
+) -> np.ndarray | None:
+    """
+    Direction ``d`` with ``S·d = 1`` along which to move ``shift`` electrons.
+
+    See :func:`normalize_charge_additive` for the arguments. Returns ``None``,
+    with a warning, when ``|shift|`` exceeds ``max_shift``.
+    """
+    if max_shift is not None and abs(shift) > max_shift:
+        warnings.warn(
+            f"charge projection skipped for {label or 'system'}: the predicted "
+            f"density is off by {shift:+.3f} e, beyond the limit of {max_shift:g} e.",
             RuntimeWarning,
             stacklevel=3,
         )
-        return scipy.linalg.cho_solve(factor, S_vec)
-    raise np.linalg.LinAlgError(
-        f"Coulomb metric of {label or 'system'} could not be factorised even "
-        f"with a relative diagonal shift of {_MAX_REGULARISATION:g}."
-    )
+        return None
+    if metric == "identity":
+        direction = S_vec
+    elif metric == "coulomb":
+        if iterative is None:
+            iterative = auxmol.nao >= ITERATIVE_COULOMB_NAUX
+        if iterative:
+            from qpet._coulomb_solver import CoulombSolver
+
+            direction = CoulombSolver(auxmol).solve(S_vec)
+        else:
+            direction = _coulomb_direction(auxmol.intor("int2c2e"), S_vec, label)
+    else:
+        raise ValueError(f"Unknown metric {metric!r}. Use 'identity' or 'coulomb'.")
+    return direction / (S_vec @ direction)
 
 
 def normalize_charge_additive(
@@ -318,6 +372,7 @@ def normalize_charge_additive(
     metric: str = "identity",
     max_shift: float | None = None,
     label: str | None = None,
+    iterative: bool | None = None,
 ) -> np.ndarray:
     """
     Shift the coefficients so the density integrates to ``n_electrons``.
@@ -333,7 +388,9 @@ def normalize_charge_additive(
       minimum Coulomb self-energy. It spreads the charge over the diffuse
       functions of every atom, which is what fixes the electrostatic potential
       at the molecular surface. Costs one ``int2c2e`` and one Cholesky
-      factorisation of the auxiliary basis.
+      factorisation of the auxiliary basis; from
+      :data:`ITERATIVE_COULOMB_NAUX` functions on, ``J⁻¹ S`` is instead solved
+      iteratively without forming ``J``.
 
     :param auxmol: PySCF auxiliary Mole object.
     :param coeffs: RI coefficients, shape (naux,). Not modified.
@@ -341,29 +398,23 @@ def normalize_charge_additive(
     :param metric: ``"identity"`` or ``"coulomb"``.
     :param max_shift: If given and the correction would move more than this
         many electrons, the coefficients are returned unchanged and a warning
-        is issued. A gap that large is not fitting noise, and spreading it over
-        the basis would turn a local failure into a global one. The limit has
-        to scale with the system: see ``DensityModel.charge_guard_relative``.
+        is issued: a gap that large is not fitting noise.
     :param label: Name of the system, used in the ``max_shift`` warning.
+    :param iterative: Solve the ``"coulomb"`` direction iteratively (``True``) or
+        by Cholesky (``False``); ``None`` picks by ``naux``.
     :return: Corrected coefficients, shape (naux,).
     """
     S_vec = compute_S_vector(auxmol)
     shift = n_electrons - S_vec @ coeffs
-    if max_shift is not None and abs(shift) > max_shift:
-        warnings.warn(
-            f"charge projection skipped for {label or 'system'}: the predicted "
-            f"density is off by {shift:+.3f} e (limit {max_shift:g} e), far "
-            f"more than fitting noise; spreading it over the basis would turn "
-            f"a local failure into a global one.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    direction = charge_direction(
+        auxmol,
+        S_vec,
+        shift,
+        metric=metric,
+        max_shift=max_shift,
+        label=label,
+        iterative=iterative,
+    )
+    if direction is None:
         return coeffs.copy()
-    if metric == "identity":
-        direction = S_vec
-    elif metric == "coulomb":
-        direction = _coulomb_direction(auxmol.intor("int2c2e"), S_vec, label)
-    else:
-        raise ValueError(f"Unknown metric {metric!r}. Use 'identity' or 'coulomb'.")
-    gamma = shift / (S_vec @ direction)
-    return coeffs + gamma * direction
+    return coeffs + shift * direction

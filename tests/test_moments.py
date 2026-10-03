@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 from pyscf import df, gto
 
+from qpet.basis import make_auxmol
 from qpet.moments import (
     apply_dipole_correction,
     compute_S_vector,
     get_ri_charge,
     get_ri_dipole,
+    normalize_charge_additive,
 )
 
 
@@ -99,8 +103,6 @@ def test_normalize_charge_coulomb_metric_is_minimum_coulomb_norm(water_ri):
     minimum Coulomb self-energy: ``δc ∝ J⁻¹ S``, which (unlike the identity
     metric) also moves coefficients outside the s channel.
     """
-    from qpet.moments import compute_S_vector, normalize_charge_additive
-
     _, _, auxmol, coeffs = water_ri
     scaled = coeffs * 1.03
     S_vec = compute_S_vector(auxmol)
@@ -123,10 +125,9 @@ def test_normalize_charge_coulomb_metric_is_minimum_coulomb_norm(water_ri):
 
 
 def test_normalize_charge_unknown_metric_raises(water_ri):
-    from qpet.moments import normalize_charge_additive
-
     _, _, auxmol, coeffs = water_ri
-    with pytest.raises(ValueError, match="Unknown metric"):
+    message = "Unknown metric 'overlap'. Use 'identity' or 'coulomb'."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         normalize_charge_additive(auxmol, coeffs, 10.0, metric="overlap")
 
 
@@ -139,12 +140,14 @@ def test_normalize_charge_guard_skips_a_hopeless_correction(water_ri):
     elements; spreading that much charge over the whole basis in the Coulomb
     metric turns a local failure into a global one.
     """
-    from qpet.moments import compute_S_vector, normalize_charge_additive
-
     _, _, auxmol, coeffs = water_ri
     S_vec = compute_S_vector(auxmol)
 
-    with pytest.warns(RuntimeWarning, match="charge projection skipped for Be-ish"):
+    message = (
+        f"charge projection skipped for Be-ish: the predicted density is off by "
+        f"{11.5 - S_vec @ coeffs:+.3f} e, beyond the limit of 0.5 e."
+    )
+    with pytest.warns(RuntimeWarning, match=f"^{re.escape(message)}$"):
         untouched = normalize_charge_additive(
             auxmol, coeffs, 11.5, metric="coulomb", max_shift=0.5, label="Be-ish"
         )
@@ -162,8 +165,6 @@ def test_nuclear_moments_use_effective_charges(hydrogen_iodide_ri):
     With the nuclear term included, a neutral ECP molecule must come out
     neutral: 26 electrons against a 25 + 1 nuclear frame, not 53 + 1.
     """
-    from qpet.moments import get_ri_charge, get_ri_dipole
-
     mol, _, auxmol, coeffs = hydrogen_iodide_ri
     q_total = float(get_ri_charge(auxmol, coeffs, include_nuclear=True))
     assert abs(q_total) < 0.05
@@ -176,31 +177,26 @@ def test_nuclear_moments_use_effective_charges(hydrogen_iodide_ri):
     assert np.allclose(mu_a, mu_b, atol=0.05)
 
 
-def test_coulomb_direction_regularises_a_singular_metric():
-    """A rank-deficient metric (coincident functions) still yields a finite
-    direction, with a warning naming the shift; a healthy metric warns nothing."""
-    import numpy as np
-    import pytest
-
-    from qpet.moments import _coulomb_direction
-
-    rng = np.random.default_rng(0)
-    A = rng.normal(size=(6, 6))
-    J = A @ A.T
-    J[5] = J[4]  # two identical functions: exactly singular
-    J[:, 5] = J[:, 4]
-    S = rng.normal(size=6)
-    S[5] = S[4]  # identical functions have identical integrals
-
-    with pytest.warns(RuntimeWarning, match="not positive definite"):
-        direction = _coulomb_direction(J, S, "toy")
-    assert np.all(np.isfinite(direction))
-    assert abs(direction[4] - direction[5]) < 1e-6 * np.abs(direction).max()
-
-    healthy = A @ A.T + np.eye(6)
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        expected = np.linalg.solve(healthy, S)
-        np.testing.assert_allclose(_coulomb_direction(healthy, S, None), expected)
+def test_normalize_charge_regularises_a_singular_metric():
+    """Coincident atoms make ``J`` singular: the Coulomb projection still reaches
+    the target, splits it evenly between the copies, and reports the shift."""
+    mol = gto.M(atom="He 0 0 0; He 0 0 0", basis="def2-svp", verbose=0)
+    auxmol = make_auxmol(mol, "def2-universal-jfit")
+    message = (
+        f"Coulomb metric of He2 is not positive definite (naux={auxmol.nao}); "
+        "charge projection used a relative diagonal shift of 1.0e-10."
+    )
+    with pytest.warns(RuntimeWarning, match=f"^{re.escape(message)}$"):
+        fixed = normalize_charge_additive(
+            auxmol,
+            np.zeros(auxmol.nao),
+            4.0,
+            metric="coulomb",
+            label="He2",
+            iterative=False,
+        )
+    assert compute_S_vector(auxmol) @ fixed == pytest.approx(4.0, abs=1e-10)
+    half = auxmol.nao // 2
+    np.testing.assert_allclose(
+        fixed[:half], fixed[half:], atol=1e-5 * np.abs(fixed).max()
+    )

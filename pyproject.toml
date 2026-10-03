@@ -10,6 +10,9 @@ authors = [{ name = "Paolo Pegolo" }]
 
 dependencies = [
   "pyscf>=2.0.0",
+  "numba",
+  "scipy",
+  "threadpoolctl",
   "ase",
   "torch>=2.0.0",
   "metatomic-torch>=0.1.15",
