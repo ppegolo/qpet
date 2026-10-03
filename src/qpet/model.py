@@ -316,6 +316,13 @@ class DensityModel:
         molecule 0.5 e is already gross. Calibrated on this model: healthy
         systems from water to an 818-atom complex stay below 1e-3, and zeroing
         a single atom's coefficient block lands at 1.5e-3 to 2.3e-3.
+    :param charge_guard_per_charge: Charge-dependent part of the same guard,
+        per electron and per unit of net charge (default 3e-4): the limit
+        becomes at least ``charge_guard_per_charge * n_electrons * |charge|``.
+        The charge conditioning shifts every atom alike, so the raw count
+        error of a charged system grows with ``n_electrons * |charge|``:
+        about 1e-4 of that product across the OMol test set and on 2000-atom
+        protein chains of charge -6 and -7, which the size term alone rejects.
     :param ecp: Effective core potential name used to build molecules in
         :meth:`predict_systems`; unused by :meth:`predict`, which takes the
         caller's ``Mole`` as-is. Set it whenever ``basis`` implies an ECP
@@ -371,6 +378,7 @@ class DensityModel:
         charge_offset: float = DEFAULT_CHARGE_OFFSET,
         charge_guard: float | None = 0.5,
         charge_guard_relative: float = 1e-3,
+        charge_guard_per_charge: float = 3e-4,
         constrain_dipole: bool = False,
         oracle_charges: bool = False,
         dipole_head: str = "mtt::electric_dipole",
@@ -407,6 +415,7 @@ class DensityModel:
         self.charge_offset = float(charge_offset)
         self.charge_guard = charge_guard
         self.charge_guard_relative = charge_guard_relative
+        self.charge_guard_per_charge = charge_guard_per_charge
         self.constrain_dipole = constrain_dipole
         self.oracle_charges = oracle_charges
         self.dipole_head = dipole_head
@@ -635,7 +644,7 @@ class DensityModel:
                     coeffs,
                     electron_count(mol) + self.charge_offset,
                     metric=self.charge_metric,
-                    max_shift=self._max_shift(electron_count(mol)),
+                    max_shift=self._max_shift(electron_count(mol), mol.charge),
                     label=_system_label(mol, index),
                 )
                 for index, (mol, auxmol, coeffs) in enumerate(
@@ -731,7 +740,7 @@ class DensityModel:
             )
             target = electron_count(mol) + self.charge_offset
             shift = target - s_vec @ coefficients
-            limit = self._max_shift(electron_count(mol))
+            limit = self._max_shift(electron_count(mol), mol.charge)
             if limit is None or abs(float(shift)) <= limit:
                 direction = s_vec
                 if self.charge_metric == "coulomb":
@@ -745,11 +754,14 @@ class DensityModel:
                 coefficients = coefficients + (shift / (s_vec @ direction)) * direction
         return coefficients
 
-    def _max_shift(self, n_electrons: float) -> float | None:
-        """The projection guard for a system of this size, in electrons."""
+    def _max_shift(self, n_electrons: float, charge: int = 0) -> float | None:
+        """The projection guard for a system of this size and charge, in electrons."""
         if self.charge_guard is None:
             return None
-        return max(self.charge_guard, self.charge_guard_relative * n_electrons)
+        limit = max(self.charge_guard, self.charge_guard_relative * n_electrons)
+        if charge:
+            limit = max(limit, self.charge_guard_per_charge * n_electrons * abs(charge))
+        return limit
 
     def _petfast_coefficients(
         self, mol: gto.Mole, system: System | None = None

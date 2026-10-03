@@ -451,7 +451,6 @@ def test_charge_guard_scales_with_the_electron_count():
     assert model._max_shift(3150) is None
 
 
-
 def test_predict_coefficients_torch_matches_numpy_and_finite_differences():
     """Same coefficients as the numpy path, and a gradient to the positions."""
     pytest.importorskip("metatomic")
@@ -497,3 +496,19 @@ def test_predict_coefficients_torch_matches_numpy_and_finite_differences():
         for sign in (1, -1)
     )
     assert analytic == pytest.approx((plus - minus) / (2 * step), rel=1e-3)
+
+
+def test_charge_guard_grows_with_the_net_charge():
+    """Large charged chains get a limit proportional to n_electrons * |charge|."""
+    from qpet.model import DensityModel
+
+    model = DensityModel.__new__(DensityModel)  # no checkpoint needed
+    model.charge_guard = 0.5
+    model.charge_guard_relative = 1e-3
+    model.charge_guard_per_charge = 3e-4
+
+    assert model._max_shift(3150, 0) == pytest.approx(3.150)  # neutral: unchanged
+    assert model._max_shift(80, -1) == 0.5  # small anion keeps the floor
+    # KSI chain A (8370 e, charge -7): the raw count is off by 8.3-8.6 e,
+    # just above the size-only limit of 8.37 e.
+    assert model._max_shift(8370, -7) > 8.64 > model._max_shift(8370, 0)
