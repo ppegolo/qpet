@@ -84,39 +84,14 @@ def _system_label(mol: gto.Mole, index: int) -> str:
     return f"system {index} ({formula}, charge {mol.charge:+d})"
 
 
-def _check_coefficient_count(
-    mol: gto.Mole, auxmol: gto.Mole, coeffs: np.ndarray
-) -> None:
-    """
-    Fail with the element to blame when a prediction is the wrong length.
-
-    A model covers a set of elements; on one it does not, the backend returns a
-    block of the wrong width and the vector no longer matches the auxiliary
-    basis. Contracting it would raise a shape error naming neither the system
-    nor the element, so name them here.
-    """
-    if len(coeffs) == auxmol.nao:
-        return
-    offsets = auxmol.aoslice_by_atom()[:, 3] - auxmol.aoslice_by_atom()[:, 2]
-    per_element: dict[str, int] = {}
-    for atom in range(auxmol.natm):
-        per_element.setdefault(auxmol.atom_symbol(atom), int(offsets[atom]))
-    heavy = sorted(
-        (sym for sym in per_element if gto.charge(sym) >= 37),
-        key=gto.charge,
-    )
-    hint = (
-        f" The system contains {', '.join(heavy)}, which carries an ECP: check "
-        f"that the species reaching the model is the atomic number and not the "
-        f"ECP-reduced nuclear charge, and that its block matches "
-        f"{auxmol.basis!r}."
-        if heavy
-        else " Check that aux_basis matches the basis the model was trained on."
-    )
-    raise ValueError(
-        f"Predicted {len(coeffs)} coefficients for {_system_label(mol, 0)} but "
-        f"the auxiliary basis has {auxmol.nao} functions.{hint}"
-    )
+def _check_coefficient_count(auxmol: gto.Mole, coeffs: np.ndarray, label: str) -> None:
+    """Fail, naming the system, when a prediction does not fit the auxiliary basis."""
+    if len(coeffs) != auxmol.nao:
+        raise ValueError(
+            f"Predicted {len(coeffs)} coefficients for {label} but the auxiliary "
+            f"basis has {auxmol.nao} functions; check that aux_basis matches the "
+            "basis the model was trained on."
+        )
 
 
 def _tensormap_to_pyscf_tensors(
@@ -289,12 +264,11 @@ class DensityModel:
     :param dtype: Torch dtype (default ``torch.float32``).
     :param backend: ``"auto"`` (default), ``"metatomic"`` or ``"petfast"``.
     :param normalize_charge: Shift the coefficients so each predicted density
-        integrates to the expected electron count (default True). The model is
-        not charge-conserving; on the pocket validation set this projection
-        alone removes 31% of the interface-ESP RMSE with nothing learned. Pass
-        ``normalize_charge=False`` for the raw model output. With
-        :meth:`predict_systems` this needs ``ecp`` set for ECP elements,
-        otherwise the target count is Z rather than Z_eff.
+        integrates to the expected electron count, or to the number of unpaired
+        electrons 2S for a spin head (default True): the model is not
+        charge-conserving. Pass ``normalize_charge=False`` for the raw model
+        output. With :meth:`predict_systems` this needs ``ecp`` set for ECP
+        elements, otherwise the target count is Z rather than Z_eff.
     :param charge_metric: Metric of the charge correction, ``"coulomb"``
         (default; minimum Coulomb self-energy, spreads the missing charge over
         the diffuse functions and repairs the surface potential) or
@@ -305,24 +279,11 @@ class DensityModel:
         fits are unconstrained and integrate to slightly more than the exact
         count; this is the mean of that basis-incompleteness offset, so the
         target is what a perfect model of the *reference* would predict.
-    :param charge_guard: Absolute floor of the projection guard, in electrons
-        (default 0.5). The projection is skipped, with a warning naming the
-        system, when it would move more than
-        ``max(charge_guard, charge_guard_relative * n_electrons)``.
-    :param charge_guard_relative: Size-dependent part of the same guard
-        (default 1e-3, i.e. 0.1 % of the electron count). An absolute limit
-        alone is wrong at both ends: on a protein site of 3000 electrons a
-        healthy prediction routinely misses by 1 e (0.03 %), while on a small
-        molecule 0.5 e is already gross. Calibrated on this model: healthy
-        systems from water to an 818-atom complex stay below 1e-3, and zeroing
-        a single atom's coefficient block lands at 1.5e-3 to 2.3e-3.
-    :param charge_guard_per_charge: Charge-dependent part of the same guard,
-        per electron and per unit of net charge (default 3e-4): the limit
-        becomes at least ``charge_guard_per_charge * n_electrons * |charge|``.
-        The charge conditioning shifts every atom alike, so the raw count
-        error of a charged system grows with ``n_electrons * |charge|``:
-        about 1e-4 of that product across the OMol test set and on 2000-atom
-        protein chains of charge -6 and -7, which the size term alone rejects.
+    :param charge_guard: Floor, in electrons, of the limit above which the
+        projection is skipped with a warning (default 0.5; ``None`` disables it).
+    :param charge_guard_relative: Part of that limit per electron (default 1e-3).
+    :param charge_guard_per_charge: Part of that limit per electron and unit of
+        net charge (default 3e-4).
     :param ecp: Effective core potential name used to build molecules in
         :meth:`predict_systems`; unused by :meth:`predict`, which takes the
         caller's ``Mole`` as-is. Set it whenever ``basis`` implies an ECP
@@ -487,18 +448,18 @@ class DensityModel:
         ]
 
     @property
-    def device(self) -> str:
-        """The torch device the model and its tensors live on, as given to the
-        constructor.
-
-        ``predict_coefficients_torch`` returns its coefficients here, keeping the
-        graph back to the input positions.
-        """
-        return self._device
+    def _is_spin_head(self) -> bool:
+        return (self._head or "").endswith("_spin")
 
     @property
     def _zero_singlet_spin(self) -> bool:
-        return not self.broken_symmetry and (self._head or "").endswith("_spin")
+        return self._is_spin_head and not self.broken_symmetry
+
+    def _norm_target(self, mol: gto.Mole) -> float:
+        """Integral the normalised density is projected to: 2S for a spin head."""
+        if self._is_spin_head:
+            return float(mol.spin)
+        return electron_count(mol) + self.charge_offset
 
     def _init_petfast(
         self,
@@ -525,8 +486,8 @@ class DensityModel:
                 "'.petfast' artifact path or a petfast.Calculator."
             )
 
-        petfast = _require_petfast()
         if isinstance(model, str):
+            petfast = _require_petfast()
             self._calculator = petfast.Calculator(
                 model, device=device, dtype=dtype, **options
             )
@@ -537,6 +498,7 @@ class DensityModel:
                     "forwarded to petfast.Calculator, which is already built."
                 )
             self._calculator = model
+        self._head = self._calculator.target_name
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -619,9 +581,7 @@ class DensityModel:
 
         outputs: dict[str, TensorMap] = {}
         if self.backend == "petfast":
-            # ``predict_systems`` supplies one System per Mole and its cell/pbc must
-            # reach petfast (see _petfast_coefficients); ``predict`` takes bare Moles
-            # and passes ``systems=[]`` -- those are molecular, so no cell is lost.
+            # Systems carry the cell; ``predict`` passes none for its molecules.
             if len(systems) == len(mols):
                 coeffs_list = [
                     self._petfast_coefficients(mol, system)
@@ -640,25 +600,23 @@ class DensityModel:
             assert self._head is not None  # the constructor rejects a bare head
             outputs = self._evaluate(systems)
             coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
-            if self._zero_singlet_spin:
-                coeffs_list = [
-                    np.zeros_like(c) if mol.spin == 0 else c
-                    for mol, c in zip(mols, coeffs_list, strict=True)
-                ]
+        if self._zero_singlet_spin:
+            coeffs_list = [
+                np.zeros_like(c) if mol.spin == 0 else c
+                for mol, c in zip(mols, coeffs_list, strict=True)
+            ]
 
-        # Check the block structure before anything contracts the coefficients
-        # with an auxiliary-basis quantity: an element the model does not cover
-        # yields a short vector, and a matmul shape error names neither the
-        # system nor the element.
-        for mol, auxmol, coeffs in zip(mols, auxmols, coeffs_list, strict=True):
-            _check_coefficient_count(mol, auxmol, coeffs)
+        for index, (mol, auxmol, coeffs) in enumerate(
+            zip(mols, auxmols, coeffs_list, strict=True)
+        ):
+            _check_coefficient_count(auxmol, coeffs, _system_label(mol, index))
 
         if self.normalize_charge:
             coeffs_list = [
                 normalize_charge_additive(
                     auxmol,
                     coeffs,
-                    electron_count(mol) + self.charge_offset,
+                    self._norm_target(mol),
                     metric=self.charge_metric,
                     max_shift=self._max_shift(electron_count(mol), mol.charge),
                     label=_system_label(mol, index),
@@ -719,7 +677,7 @@ class DensityModel:
         import torch
 
         from .conversions import build_system
-        from .moments import _coulomb_direction, compute_S_vector
+        from .moments import charge_direction, compute_S_vector
 
         if self.backend != "metatomic":
             raise ValueError("predict_coefficients_torch needs the metatomic backend")
@@ -751,25 +709,22 @@ class DensityModel:
             coefficients = torch.zeros_like(coefficients)
 
         if self.normalize_charge:
-            s_vec = torch.as_tensor(
-                compute_S_vector(auxmol),
-                dtype=torch.float64,
-                device=coefficients.device,
+            device = coefficients.device
+            S_vec = compute_S_vector(auxmol)
+            integrals = torch.as_tensor(S_vec, dtype=coefficients.dtype, device=device)
+            shift = self._norm_target(mol) - integrals @ coefficients
+            direction = charge_direction(
+                auxmol,
+                S_vec,
+                float(shift),
+                metric=self.charge_metric,
+                max_shift=self._max_shift(electron_count(mol), mol.charge),
+                label=_system_label(mol, 0),
             )
-            target = electron_count(mol) + self.charge_offset
-            shift = target - s_vec @ coefficients
-            limit = self._max_shift(electron_count(mol), mol.charge)
-            if limit is None or abs(float(shift)) <= limit:
-                direction = s_vec
-                if self.charge_metric == "coulomb":
-                    direction = torch.as_tensor(
-                        _coulomb_direction(
-                            auxmol.intor("int2c2e"), compute_S_vector(auxmol), None
-                        ),
-                        dtype=torch.float64,
-                        device=coefficients.device,
-                    )
-                coefficients = coefficients + (shift / (s_vec @ direction)) * direction
+            if direction is not None:
+                coefficients = coefficients + shift * torch.as_tensor(
+                    direction, dtype=coefficients.dtype, device=device
+                )
         return coefficients
 
     def _max_shift(self, n_electrons: float, charge: int = 0) -> float | None:
@@ -788,13 +743,8 @@ class DensityModel:
 
         The same extraction the metatomic path sees — positions in angstrom and
         the atomic numbers, not the ECP-reduced nuclear charges — so the two
-        backends are fed identical inputs.
-
-        The periodicity travels with the ``system`` (``system_to_pyscf`` drops the
-        cell, so the ``Mole`` alone looks molecular): without it petfast builds a
-        non-periodic neighbour list and silently ignores every periodic image, so a
-        crystal comes out as the isolated cell — matching metatomic only when no
-        image falls inside the cutoff.
+        backends are fed identical inputs. The cell comes from ``system``, since
+        the ``Mole`` carries none.
         """
         import torch
 
