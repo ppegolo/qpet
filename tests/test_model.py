@@ -195,6 +195,33 @@ def test_dict_mode_predict_roundtrip(water_ri, water_tensormap):
     np.testing.assert_allclose(rho.coeffs, coeffs_ref, atol=1e-10)
 
 
+def test_spin_head_zero_on_singlet(water_ri, water_tensormap):
+    """A spin head returns zero for a singlet unless ``broken_symmetry=True``;
+    other multiplicities and the total-density head are untouched."""
+    mol, _, _, coeffs_ref = water_ri
+    cation = mol.copy()
+    cation.charge, cation.spin = 1, 1
+    cation.build()
+
+    def predict(m, head, **kw):
+        model = DensityModel(
+            {head: water_tensormap},
+            head=head,
+            aux_basis="def2-svp-jkfit",
+            normalize_charge=False,
+            **kw,
+        )
+        return model.predict(m).coeffs
+
+    spin = HEAD + "_spin"
+    np.testing.assert_array_equal(predict(mol, spin), np.zeros_like(coeffs_ref))
+    np.testing.assert_allclose(
+        predict(mol, spin, broken_symmetry=True), coeffs_ref, atol=1e-10
+    )
+    np.testing.assert_allclose(predict(cation, spin), coeffs_ref, atol=1e-10)
+    np.testing.assert_allclose(predict(mol, HEAD), coeffs_ref, atol=1e-10)
+
+
 def test_dict_mode_density_matches_ri(water_ri, water_tensormap):
     """Density from dict-mode ``DensityModel`` matches direct ``RIDensity``."""
     mol, _, auxmol, coeffs = water_ri

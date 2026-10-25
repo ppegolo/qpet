@@ -337,6 +337,11 @@ class DensityModel:
         backend only.
     :param dipole_head: Name of the dipole output in the model (only used
         when ``constrain_dipole=True``).
+    :param broken_symmetry: Spin heads only (head name ending in ``_spin``).
+        By default the spin density of a singlet (``mol.spin == 0``) is set to
+        zero: the spin head was trained on unrestricted states only, so on a
+        closed-shell singlet it predicts a spurious broken-symmetry pattern.
+        Pass True to keep the prediction for broken-symmetry singlets.
     :param max_atoms_per_pass: petfast backend only. Above this many atoms,
         evaluate with petfast's spatial partitioning instead of in one pass.
         Partitioning is exact but processes each block's halo as well as its
@@ -383,6 +388,7 @@ class DensityModel:
         oracle_charges: bool = False,
         dipole_head: str = "mtt::electric_dipole",
         ecp: str | None = None,
+        broken_symmetry: bool = False,
         max_atoms_per_pass: int | None = 150_000,
         **backend_options: Any,
     ) -> None:
@@ -407,6 +413,7 @@ class DensityModel:
         self.basis = basis
         self.ecp = ecp
         self.normalize_charge = normalize_charge
+        self.broken_symmetry = broken_symmetry
         if charge_metric not in ("identity", "coulomb"):
             raise ValueError(
                 f"Unknown charge_metric {charge_metric!r}. Use 'identity' or 'coulomb'."
@@ -488,6 +495,10 @@ class DensityModel:
         graph back to the input positions.
         """
         return self._device
+
+    @property
+    def _zero_singlet_spin(self) -> bool:
+        return not self.broken_symmetry and (self._head or "").endswith("_spin")
 
     def _init_petfast(
         self,
@@ -629,6 +640,11 @@ class DensityModel:
             assert self._head is not None  # the constructor rejects a bare head
             outputs = self._evaluate(systems)
             coeffs_list = _tensormap_to_pyscf_coefficients(outputs[self._head])
+            if self._zero_singlet_spin:
+                coeffs_list = [
+                    np.zeros_like(c) if mol.spin == 0 else c
+                    for mol, c in zip(mols, coeffs_list, strict=True)
+                ]
 
         # Check the block structure before anything contracts the coefficients
         # with an auxiliary-basis quantity: an element the model does not cover
@@ -731,6 +747,8 @@ class DensityModel:
         outputs = self._loaded_model([system], self._options, False)
         tensors = _tensormap_to_pyscf_tensors(outputs[self._head])
         coefficients = tensors[0].to(torch.float64)
+        if self._zero_singlet_spin and mol.spin == 0:
+            coefficients = torch.zeros_like(coefficients)
 
         if self.normalize_charge:
             s_vec = torch.as_tensor(
