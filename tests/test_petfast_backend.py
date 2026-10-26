@@ -67,7 +67,7 @@ def _molecules():
 
 
 def test_matches_metatomic_backend(exports):
-    """Both molecules, with and without the charge correction."""
+    """Both molecules, with and without the (unguarded) charge correction."""
     from qpet.model import DensityModel
 
     metatomic_path, artifact_path, head = exports
@@ -79,12 +79,14 @@ def test_matches_metatomic_backend(exports):
                 aux_basis=AUX_BASIS,
                 dtype=torch.float64,
                 normalize_charge=normalize,
+                charge_guard=None,
             ).predict(mol)
             fast = DensityModel(
                 artifact_path,
                 aux_basis=AUX_BASIS,
                 dtype=torch.float64,
                 normalize_charge=normalize,
+                charge_guard=None,
             ).predict(mol)
 
             scale = np.abs(reference.coeffs).mean()
