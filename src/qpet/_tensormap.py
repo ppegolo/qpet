@@ -35,7 +35,7 @@ def to_pyscf(tensor: TensorMap, n_members: int = 1) -> list[torch.Tensor]:
         device = vals.device
         samples = block.samples.values.to(device, dtype=torch.long)
         m = torch.arange(n_m, device=device)
-        rad = block.properties.values[:n_rad, 0].to(device, dtype=torch.long)
+        rad = block.properties.values[:n_rad, -1].to(device, dtype=torch.long)
         grid = torch.stack(
             torch.broadcast_tensors(
                 samples[:, 0, None, None],

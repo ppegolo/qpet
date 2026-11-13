@@ -23,7 +23,8 @@ def to_tensormap(auxmol, coeffs: np.ndarray) -> TensorMap:
     Coefficients (naux,) or members (n_members, naux) in the layout of a model output.
 
     Blocks keyed by (l, 1, Z), samples (system 0, atom), components m with the
-    l=1 order (y, z, x), properties the radial channels, member-major.
+    l=1 order (y, z, x), properties the radial channels (member-major
+    ``(ensemble_member, n)`` for an ensemble, as metatrain's LLPR writes them).
     """
     members = np.atleast_2d(coeffs)
     blocks: dict = {}
@@ -57,9 +58,7 @@ def to_tensormap(auxmol, coeffs: np.ndarray) -> TensorMap:
                         torch.arange(-ell, ell + 1, dtype=torch.int32)[:, None],
                     )
                 ],
-                properties=Labels(
-                    ["n"], torch.arange(n_members * n_rad, dtype=torch.int32)[:, None]
-                ),
+                properties=_properties(n_members, n_rad, np.ndim(coeffs) > 1),
             )
         )
     return TensorMap(
@@ -69,6 +68,17 @@ def to_tensormap(auxmol, coeffs: np.ndarray) -> TensorMap:
         ),
         out,
     )
+
+
+def _properties(n_members: int, n_rad: int, ensemble: bool) -> Labels:
+    """``n``, or metatrain's ``(ensemble_member, n)`` for an ensemble, member-major."""
+    if not ensemble:
+        return Labels(["n"], torch.arange(n_rad, dtype=torch.int32)[:, None])
+    grid = torch.cartesian_prod(
+        torch.arange(n_members, dtype=torch.int32),
+        torch.arange(n_rad, dtype=torch.int32),
+    )
+    return Labels(["ensemble_member", "n"], grid)
 
 
 class _Fixed(torch.nn.Module):
