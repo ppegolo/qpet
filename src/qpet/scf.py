@@ -1,20 +1,4 @@
-"""SCF initial guess from an RI (auxiliary-basis) electron density.
-
-Builds one Fock matrix from a predicted density — the Coulomb term
-analytically from the RI coefficients (``J_ij = Σ_P c_P (ij|P)``), the XC
-term numerically on a DFT grid — and diagonalizes it once. The resulting
-density matrix is a high-quality ``dm0`` for
-:meth:`pyscf.scf.hf.SCF.kernel`, typically saving several SCF cycles over
-the default guess.
-
-Two approximations, both inherent to starting from a density instead of
-orbitals:
-
-- Hybrid functionals: the exact-exchange term needs a density matrix, so the
-  standard initial guess (minao) is used for that contribution only.
-- Meta-GGAs: the kinetic-energy density is approximated by the von
-  Weizsäcker form ``|∇ρ|² / 8ρ`` (exact for a single orbital).
-"""
+"""PySCF calculations started from a predicted density."""
 
 from __future__ import annotations
 
@@ -22,141 +6,110 @@ import numpy as np
 import scipy.linalg
 from pyscf import df, dft, gto
 from pyscf.dft import numint
-from pyscf.scf import hf as scf_hf
+from pyscf.scf import hf
 
-from qpet.moments import normalize_charge_additive
+from qpet.model import Prediction
 
-# Grid points processed per batch when assembling the XC matrix; bounds the
-# (chunk, nao) AO-value intermediates.
 _GRID_CHUNK = 16384
+_J_FLOATS = 100_000_000
 
 
-def _xc_matrix(
-    mol: gto.Mole,
-    auxmol: gto.Mole,
-    coeffs: np.ndarray,
-    grids: dft.Grids,
-    xc: str,
+def _coulomb(mol: gto.Mole, auxmol: gto.Mole, coeffs: np.ndarray) -> np.ndarray:
+    """``J_μν = Σ_k (μν|k) c_k``, a slice of auxiliary shells at a time."""
+    j = np.zeros((mol.nao, mol.nao))
+    ao_loc = auxmol.ao_loc_nr()
+    per_function = mol.nao**2
+    s0 = 0
+    while s0 < auxmol.nbas:
+        s1 = s0 + 1
+        while (
+            s1 < auxmol.nbas
+            and (ao_loc[s1 + 1] - ao_loc[s0]) * per_function < _J_FLOATS
+        ):
+            s1 += 1
+        shls = (0, mol.nbas, 0, mol.nbas, s0, s1)
+        j += (
+            df.incore.aux_e2(mol, auxmol, "int3c2e", aosym="s1", shls_slice=shls)
+            @ coeffs[ao_loc[s0] : ao_loc[s1]]
+        )
+        s0 = s1
+    return j
+
+
+def _xc(
+    mol: gto.Mole, prediction: Prediction, grids: dft.Grids, xc: str, spin: bool
 ) -> np.ndarray:
-    """
-    XC potential matrix ``V_xc[ρ_RI]`` in the AO basis of ``mol``.
-
-    The density (and its gradient for GGA/MGGA) is evaluated on the grid
-    directly from the auxiliary-basis expansion.
-    """
+    """``V_xc`` of the prediction (LDA or GGA); (2, nao, nao) with ``spin``."""
     xctype = dft.libxc.xc_type(xc)
-    nao = mol.nao
-    vmat = np.zeros((nao, nao))
-    if xctype == "HF":  # pure exact exchange: no grid contribution
-        return vmat
-
     deriv = 0 if xctype == "LDA" else 1
     ni = numint.NumInt()
-
+    auxmol = prediction.rho.auxmol
+    m = (
+        prediction.spin.coeffs
+        if spin and prediction.spin is not None
+        else 0 * prediction.rho.coeffs
+    )
+    vmat = np.zeros((2 if spin else 1, mol.nao, mol.nao))
     for p0 in range(0, grids.weights.size, _GRID_CHUNK):
-        p1 = min(p0 + _GRID_CHUNK, grids.weights.size)
-        coords = grids.coords[p0:p1]
-        weights = grids.weights[p0:p1]
-        ao_aux = numint.eval_ao(auxmol, coords, deriv=deriv)
+        coords, weights = (
+            grids.coords[p0 : p0 + _GRID_CHUNK],
+            grids.weights[p0 : p0 + _GRID_CHUNK],
+        )
+        aux = numint.eval_ao(auxmol, coords, deriv=deriv)
         ao = numint.eval_ao(mol, coords, deriv=deriv)
-
-        if xctype == "LDA":
-            rho = ao_aux @ coeffs
-        else:
-            rho = np.einsum("xgi,i->xg", ao_aux, coeffs)
-            if xctype == "MGGA":
-                # von Weizsäcker tau; the floor avoids 0/0 in the far field.
-                tau = (rho[1:4] ** 2).sum(axis=0) / (8.0 * np.maximum(rho[0], 1e-30))
-                rho = np.vstack([rho, tau])
-
+        rho, mag = aux @ prediction.rho.coeffs, aux @ m
+        if spin:
+            rho = np.stack([(rho + mag) / 2, (rho - mag) / 2])
+            if deriv:
+                rho[:, 0] = np.maximum(rho[:, 0], 0)
+            else:
+                rho = np.maximum(rho, 0)
         vxc = ni.eval_xc_eff(xc, rho, deriv=1, xctype=xctype)[1]
-        wv = weights * vxc  # (nvar, ngrid)
-
-        # Symmetric contributions are halved here and restored by the final
-        # ``vmat + vmat.T``.
-        wv[0] *= 0.5
-        if xctype == "LDA":
-            vmat += (ao * wv[0][:, None]).T @ ao
-        else:
-            aow = np.einsum("xgi,xg->gi", ao[:4], wv[:4])
-            vmat += ao[0].T @ aow
-            if xctype == "MGGA":
-                # tau matrix element: 0.5 Σ_x ∂φ_i ∂φ_j v_tau (then halved
-                # again for the symmetrization) → factor 0.25.
-                wtau = 0.25 * wv[4]
-                for x in (1, 2, 3):
-                    vmat += (ao[x] * wtau[:, None]).T @ ao[x]
-
-    return vmat + vmat.T
+        wv = (weights * vxc).reshape(len(vmat), -1, len(weights))
+        wv[:, 0] *= 0.5
+        for s in range(len(vmat)):
+            if deriv:
+                vmat[s] += ao[0].T @ np.einsum("xgi,xg->gi", ao, wv[s])
+            else:
+                vmat[s] += (ao * wv[s][0][:, None]).T @ ao
+    vmat = vmat + vmat.transpose(0, 2, 1)
+    return vmat if spin else vmat[0]
 
 
-def dm_from_auxdensity(
-    mol: gto.Mole,
-    auxmol: gto.Mole,
-    coeffs: np.ndarray,
-    xc: str = "pbe",
-    *,
-    normalize_charge: bool = False,
-) -> np.ndarray:
+def to_scf(
+    prediction: Prediction, mol: gto.Mole, xc: str, *, guess_xc: str = "pbe", **options
+):
     """
-    SCF initial-guess density matrix from RI density-fitting coefficients.
+    PySCF Kohn-Sham object that starts from the predicted density.
 
-    Assembles ``F = h_core + J[c] + V_xc[ρ_RI]`` (plus a minao-based exact
-    exchange term for hybrids), diagonalizes once, and returns the
-    closed-shell density matrix of the occupied orbitals — effectively one
-    free SCF iteration from the predicted density.
+    RKS for a closed shell, UKS when ``mol`` is open-shell or the prediction
+    carries a spin density (a broken-symmetry singlet). The initial guess is one
+    diagonalization in the potential of the prediction: ``h + J[ρ] + V_xc[ρα, ρβ]``
+    with ``ρα,β = (ρ ± m)/2``, J from the RI coefficients and ``V_xc`` from the
+    semilocal ``guess_xc`` (exact exchange needs orbitals). Then
+    ``to_scf(p, mol, "wb97m-v").kernel()`` runs the SCF from the prediction, and
+    the object is used as any PySCF calculation.
 
-    :param mol: Built PySCF Mole (orbital basis) for the SCF calculation.
-    :param auxmol: Auxiliary-basis Mole matching ``coeffs``.
-    :param coeffs: RI density coefficients, shape (naux,).
-    :param xc: Exchange-correlation functional (LDA/GGA/MGGA/global hybrid;
-        range-separated hybrids are not supported).
-    :param normalize_charge: If True, apply a minimum-norm additive shift to
-        the s-channel coefficients so the density integrates to
-        ``mol.nelectron`` before building the Fock matrix.
-    :return: Initial-guess density matrix ``dm0``, shape (nao, nao), for
-        ``mf.kernel(dm0=dm0)``.
-    :raises NotImplementedError: For open-shell molecules or range-separated
-        hybrid functionals.
-    :raises ValueError: If ``coeffs`` does not match the auxiliary basis.
+    :param options: set on the object (``conv_tol``, ``max_cycle``, ``chkfile``, ...).
     """
-    if mol.spin != 0:
-        raise NotImplementedError(
-            "dm_from_auxdensity supports closed-shell (RKS) molecules only"
+    unrestricted = mol.spin > 0 or (
+        prediction.spin is not None and prediction.spin.coeffs.any()
+    )
+    mf = (dft.UKS if unrestricted else dft.RKS)(mol, xc=xc).set(**options)
+    fock = hf.get_hcore(mol) + _coulomb(
+        mol, prediction.rho.auxmol, prediction.rho.coeffs
+    )
+    fock = fock + _xc(mol, prediction, mf.grids.build(), guess_xc, unrestricted)
+    s = mf.get_ovlp()
+
+    def occupied(f: np.ndarray, n: int) -> np.ndarray:
+        c = scipy.linalg.eigh(f, s)[1][:, :n]
+        return c @ c.T
+
+    if unrestricted:
+        mf.init_guess = np.array(
+            [occupied(f, n) for f, n in zip(fock, mol.nelec, strict=True)]
         )
-    if coeffs.shape != (auxmol.nao,):
-        raise ValueError(
-            f"coeffs shape {coeffs.shape} does not match auxiliary basis size "
-            f"({auxmol.nao},)"
-        )
-    omega = dft.libxc.rsh_coeff(xc)[0]
-    if omega != 0:
-        raise NotImplementedError(f"range-separated hybrid '{xc}' is not supported")
-
-    if normalize_charge:
-        coeffs = normalize_charge_additive(auxmol, coeffs, mol.nelectron)
-
-    grids = dft.Grids(mol)
-    grids.build()
-
-    fock = scf_hf.get_hcore(mol)
-    fock = fock + _xc_matrix(mol, auxmol, coeffs, grids, xc)
-
-    # Coulomb term directly from the RI expansion. Incore 3-center integrals:
-    # peak memory nao² × naux floats.
-    j3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")
-    fock += j3c @ coeffs
-
-    hyb = dft.libxc.hybrid_coeff(xc)
-    if hyb != 0:
-        # Exact exchange needs a density matrix; the RI density provides
-        # none, so use the standard initial guess for this term only.
-        dm_minao = scf_hf.init_guess_by_minao(mol)
-        vk = scf_hf.get_jk(mol, dm_minao, hermi=1)[1]
-        fock -= 0.5 * hyb * vk
-
-    s1e = mol.intor_symmetric("int1e_ovlp")
-    _, mo_coeff = scipy.linalg.eigh(fock, s1e)
-    nocc = mol.nelectron // 2
-    mocc = mo_coeff[:, :nocc]
-    return 2.0 * (mocc @ mocc.T)
+    else:
+        mf.init_guess = 2 * occupied(fock, mol.nelectron // 2)
+    return mf

@@ -8,10 +8,10 @@ import scipy.linalg
 from pyscf import gto
 
 import qpet._coulomb_solver
-import qpet.moments
+import qpet.normalize
 from qpet._coulomb_solver import CoulombSolver, _FarField
 from qpet.basis import make_auxmol
-from qpet.moments import compute_S_vector, normalize_charge_additive
+from qpet.normalize import aux_integrals, direction
 
 _WATER = [
     ("O", (0.0, 0.0, 0.0)),
@@ -42,7 +42,7 @@ def _j_norm_error(J: np.ndarray, x: np.ndarray, reference: np.ndarray) -> float:
 def cluster():
     """40 waters (120 atoms) spanning about 14 Å, with the exact metric and S vector."""
     auxmol = _water_cluster((4, 5, 2), 3.5)
-    return auxmol, auxmol.intor("int2c2e"), compute_S_vector(auxmol)
+    return auxmol, auxmol.intor("int2c2e"), aux_integrals(auxmol)
 
 
 def test_solve_matches_dense_inverse(cluster):
@@ -64,24 +64,17 @@ def test_far_field_matches_int2c2e_between_distant_atoms():
     assert np.linalg.norm(far - expected) < 1e-8 * np.linalg.norm(expected)
 
 
-def test_normalize_charge_iterative_matches_dense(cluster):
-    """Both routes of ``metric="coulomb"`` give the same corrected coefficients."""
-    auxmol, J, S_vec = cluster
-    coeffs = np.random.default_rng(1).normal(size=auxmol.nao) * 1e-2
-    n_electrons = float(S_vec @ coeffs) + 0.7
-    dense = normalize_charge_additive(
-        auxmol, coeffs, n_electrons, metric="coulomb", iterative=False
-    )
-    fast = normalize_charge_additive(
-        auxmol, coeffs, n_electrons, metric="coulomb", iterative=True
-    )
-    assert abs(S_vec @ fast - n_electrons) < 1e-10
-    assert _j_norm_error(J, fast - coeffs, dense - coeffs) < 1e-4
+def test_iterative_direction_matches_dense(cluster):
+    """Both routes of ``metric="coulomb"`` give the same projection direction."""
+    auxmol, J, _ = cluster
+    dense = direction(auxmol, "coulomb", iterative=False)
+    fast = direction(auxmol, "coulomb", iterative=True)
+    assert _j_norm_error(J, fast, dense) < 1e-4
 
 
-def test_normalize_charge_switches_to_iterative_solver_by_size(cluster, monkeypatch):
+def test_direction_switches_to_iterative_solver_by_size(cluster, monkeypatch):
     """``iterative=None`` follows ``ITERATIVE_COULOMB_NAUX``."""
-    auxmol, _, S_vec = cluster
+    auxmol, _, _ = cluster
     calls = []
 
     class Spy(CoulombSolver):
@@ -90,9 +83,8 @@ def test_normalize_charge_switches_to_iterative_solver_by_size(cluster, monkeypa
             return super().solve(b, tol)
 
     monkeypatch.setattr(qpet._coulomb_solver, "CoulombSolver", Spy)
-    coeffs = np.zeros(auxmol.nao)
-    normalize_charge_additive(auxmol, coeffs, 1.0, metric="coulomb")
+    direction(auxmol, "coulomb")
     assert not calls
-    monkeypatch.setattr(qpet.moments, "ITERATIVE_COULOMB_NAUX", auxmol.nao)
-    normalize_charge_additive(auxmol, coeffs, 1.0, metric="coulomb")
+    monkeypatch.setattr(qpet.normalize, "ITERATIVE_COULOMB_NAUX", auxmol.nao)
+    direction(auxmol, "coulomb")
     assert len(calls) == 1

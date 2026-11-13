@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from pyscf import df, gto, scf
 
-from qpet import RIDensity, becke_grid, make_auxmol, resolve_aux_basis
-from qpet.basis import is_etb_spec
+from qpet import RIDensity, becke_grid, make_auxmol
+from qpet.basis import is_etb_spec, resolve_aux_basis
 
 
 @pytest.fixture(scope="module")
@@ -81,13 +81,13 @@ def test_etb_basis_follows_the_spec_not_the_molecule():
 def water_etb(water):
     """Water RHF density, Coulomb-metric RI-fitted onto an ETB auxiliary basis."""
     dm = scf.RHF(water).run(verbose=0).make_rdm1()
-    return RIDensity.from_dm(water, dm, "etb:def2-svp:2.0")
+    return RIDensity.fit(water, dm, "etb:def2-svp:2.0")
 
 
 def test_ri_fit_in_etb_basis_integrates_to_electron_count(water, water_etb):
     """End-to-end: an ETB-fitted RI density carries the right electron count."""
-    grid = becke_grid(water, level=3)
-    n_elec = float(np.sum(grid.weights * water_etb.density(grid.points)))
+    points, weights = becke_grid(water, level=3)
+    n_elec = float(weights @ water_etb.density(points))
     assert abs(n_elec - water.nelectron) < 0.05
 
 

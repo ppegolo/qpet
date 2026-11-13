@@ -1,126 +1,42 @@
-"""qpet: interface metatomic ML density models with PySCF.
+"""qpet: ML electron densities on PySCF molecules.
 
-Predicts RI electron densities with metatomic models and evaluates them —
-density, electrostatic potential, multipoles, CUBE export, SCF initial
-guesses — alongside exact density-matrix references, on equal footing.
+Predicts densities with trained models, projects them to the exact electron
+count, and evaluates them next to DFT references on equal footing: density
+and electrostatic potential on points, multipoles, cube files, SCF guesses.
+Lengths are in bohr except in :func:`build_mole` and file I/O.
 """
 
-from .basis import make_auxmol, resolve_aux_basis
-from .conditioning import (
-    atomic_numbers_of,
-    check_spin,
-    core_electron_count,
-    core_electrons_per_atom,
-    electron_count,
-    nuclear_charges_of,
-    spin_from_parity,
-)
-from .conversions import (
-    BOHR_TO_ANG,
-    ase_to_pyscf,
-    attach_conditioning,
-    build_mole,
-    build_system,
-    pyscf_to_ase,
-    pyscf_to_atom_string,
-    pyscf_to_system,
-    system_to_atom_string,
-    system_to_pyscf,
-)
-from .cube import (
-    BeckeGrid,
-    CubeData,
-    CubeGrid,
-    becke_grid,
-    read_cube,
-    write_cube,
-    write_density_cube,
-    write_esp_cube,
-    write_esp_error_cube,
-)
-from .esp_fast import FastESP
-from .fields import DMDensity, RIDensity, ScalarField, nuclear_potential
-from .interactions import (
-    HARTREE_TO_KCAL,
-    coulomb_interaction_energy,
-    hirshfeld_dispersion_energy,
-    hirshfeld_volume_ratios,
-)
-from .model import DensityModel
-from .moments import (
-    DEFAULT_CHARGE_OFFSET,
-    apply_dipole_correction,
-    compute_S_vector,
-    get_ri_charge,
-    get_ri_dipole,
-    get_ri_quadrupole,
-    normalize_charge_additive,
-)
-from .partition import FragmentDensity
-from .provenance import (
-    Fingerprint,
-    file_fingerprint,
-    model_provenance,
-    provenance_columns,
-)
-from .scf import dm_from_auxdensity
+from .basis import make_auxmol
+from .conditioning import nuclear_charges_of
+from .density import DMDensity, Ensemble, RIDensity, nuclear_potential
+from .grids import CubeGrid, becke_grid, read_cube, write_cube
+from .model import DensityModel, Prediction
+from .mole import build_mole
+from .normalize import aux_integrals, direction, project
+from .scf import to_scf
 
 try:
     from ._version import __version__
-except ImportError:  # pragma: no cover - _version.py is generated at build time
+except ImportError:  # pragma: no cover - generated at build time
     __version__ = "0.0.0+unknown"
 
 __all__ = [
-    "__version__",
-    "RIDensity",
-    "FragmentDensity",
-    "coulomb_interaction_energy",
-    "hirshfeld_volume_ratios",
-    "hirshfeld_dispersion_energy",
-    "HARTREE_TO_KCAL",
-    "DMDensity",
-    "ScalarField",
-    "DensityModel",
-    "FastESP",
-    "nuclear_potential",
-    "dm_from_auxdensity",
-    "spin_from_parity",
-    "check_spin",
-    "electron_count",
-    "core_electron_count",
-    "core_electrons_per_atom",
-    "atomic_numbers_of",
-    "nuclear_charges_of",
-    "DEFAULT_CHARGE_OFFSET",
-    "get_ri_charge",
-    "get_ri_dipole",
-    "get_ri_quadrupole",
-    "apply_dipole_correction",
-    "compute_S_vector",
-    "normalize_charge_additive",
-    "Fingerprint",
-    "file_fingerprint",
-    "model_provenance",
-    "provenance_columns",
-    "write_cube",
-    "write_density_cube",
-    "write_esp_cube",
-    "write_esp_error_cube",
-    "read_cube",
-    "CubeData",
     "CubeGrid",
+    "DMDensity",
+    "DensityModel",
+    "Ensemble",
+    "Prediction",
+    "RIDensity",
+    "__version__",
+    "aux_integrals",
     "becke_grid",
-    "BeckeGrid",
-    "BOHR_TO_ANG",
-    "make_auxmol",
-    "resolve_aux_basis",
-    "attach_conditioning",
     "build_mole",
-    "build_system",
-    "ase_to_pyscf",
-    "pyscf_to_ase",
-    "pyscf_to_atom_string",
-    "pyscf_to_system",
-    "system_to_atom_string",
-    "system_to_pyscf",
+    "direction",
+    "make_auxmol",
+    "nuclear_charges_of",
+    "nuclear_potential",
+    "project",
+    "read_cube",
+    "to_scf",
+    "write_cube",
 ]

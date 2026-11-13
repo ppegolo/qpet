@@ -7,10 +7,10 @@ import re
 import numpy as np
 import pytest
 from pyscf import gto
+from pyscf.data.nist import BOHR as BOHR_TO_ANG
 from pyscf.df.addons import make_auxmol
 
-from qpet.conversions import BOHR_TO_ANG
-from qpet.fields import FAST_ESP_MIN_POINTS, RIDensity, nuclear_potential
+from qpet.density import FAST_ESP_MIN_POINTS, RIDensity
 
 torch = pytest.importorskip("torch")
 
@@ -35,13 +35,8 @@ def _reference_electronic(auxmol, coefficients, points_bohr):
     ``fast=False`` is load-bearing: without it the reference would dispatch to
     the very evaluator under test on any machine with a GPU.
     """
-    total = RIDensity(auxmol, coefficients).potential(
-        points_bohr * BOHR_TO_ANG, fast=False
-    )
-    nuclear = nuclear_potential(
-        auxmol.atom_coords(), auxmol.atom_charges(), points_bohr
-    )
-    return nuclear - total
+    density = RIDensity(auxmol, coefficients, nuclei=False)
+    return -density.potential(points_bohr, fast=False)
 
 
 @pytest.mark.parametrize("backend", ["torch", "triton"])

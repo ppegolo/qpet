@@ -9,8 +9,13 @@ import pytest
 from pyscf import df, gto
 from pyscf.lib.exceptions import BasisNotFoundError
 
-from qpet import atomic_numbers_of, check_spin, nuclear_charges_of, spin_from_parity
-from qpet.conditioning import electron_count
+from qpet.conditioning import (
+    atomic_numbers_of,
+    check_spin,
+    electron_count,
+    nuclear_charges_of,
+    spin_from_parity,
+)
 
 WATER = np.array([8, 1, 1])  # 10 electrons when neutral
 

@@ -25,7 +25,7 @@ def water_ri():
         verbose=0,
     )
     dm = scf.RHF(mol).run(verbose=0).make_rdm1()
-    rho = RIDensity.from_dm(mol, dm, "def2-svp-jkfit")
+    rho = RIDensity.fit(mol, dm, "def2-svp-jkfit")
     return mol, dm, rho.auxmol, rho.coeffs
 
 
@@ -48,5 +48,5 @@ def hydrogen_iodide_ri():
         verbose=0,
     )
     dm = scf.RHF(mol).run(verbose=0).make_rdm1()
-    rho = RIDensity.from_dm(mol, dm, "def2-universal-jfit")
+    rho = RIDensity.fit(mol, dm, "def2-universal-jfit")
     return mol, dm, rho.auxmol, rho.coeffs

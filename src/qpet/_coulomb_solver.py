@@ -29,13 +29,13 @@ import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
 from pyscf import gto, lib
+from pyscf.data.nist import BOHR
 from pyscf.gto import moleintor
 from scipy.linalg import lapack
 from scipy.spatial import cKDTree
 from threadpoolctl import threadpool_limits
 
-from qpet.conversions import BOHR_TO_ANG
-from qpet.moments import regularised_cho_factor
+from qpet.normalize import regularised_cho_factor
 
 #: Highest angular momentum of the auxiliary basis the far field supports.
 _LMAX = 4
@@ -96,7 +96,7 @@ class _NearField:
     def __init__(self, auxmol: gto.Mole, rnear: float, nthreads: int) -> None:
         sh0, sh1, self.ao0, self.ao1 = _atom_slices(auxmol)
         coords = auxmol.atom_coords()
-        neighbours = cKDTree(coords).query_ball_point(coords, rnear / BOHR_TO_ANG)
+        neighbours = cKDTree(coords).query_ball_point(coords, rnear / BOHR)
         # sorted, so the first entry of each list is the atom itself
         self.neighbours = [
             n[n >= a] for a, n in enumerate(map(np.sort, map(np.array, neighbours)))
@@ -341,7 +341,7 @@ class _FarField:
         self.map = _multipole_map(auxmol)
         self.map_t = self.map.T.tocsr()
         self.coords = np.ascontiguousarray(auxmol.atom_coords())
-        self.rnear = rnear / BOHR_TO_ANG
+        self.rnear = rnear / BOHR
         self.natm = auxmol.natm
 
     def apply(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -414,13 +414,12 @@ class _Schwarz:
         centres: list[int] = []
         for a in range(auxmol.natm):
             if not centres or (
-                np.min(np.linalg.norm(coords[centres] - coords[a], axis=1))
-                > h / BOHR_TO_ANG
+                np.min(np.linalg.norm(coords[centres] - coords[a], axis=1)) > h / BOHR
             ):
                 centres.append(a)
         members = [
             np.sort(np.array(m))
-            for m in cKDTree(coords).query_ball_point(coords[centres], rs / BOHR_TO_ANG)
+            for m in cKDTree(coords).query_ball_point(coords[centres], rs / BOHR)
         ]
         sizes = np.array([(ao1[m] - ao0[m]).sum() for m in members])
         self.index_offset = np.concatenate([[0], np.cumsum(sizes)])
