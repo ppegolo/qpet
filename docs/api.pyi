@@ -207,14 +207,15 @@ class Prediction:
     spin_ensemble: Ensemble | None = None
 
 
-def to_scf(prediction: Prediction, mol: gto.Mole, xc: str, **scf_options):
-    """PySCF mean-field object that starts from the predicted density.
+def to_scf(prediction: Prediction, mf):
+    """Set the initial guess of the Kohn-Sham object ``mf`` (RKS/UKS, CPU or GPU).
 
-    RKS for a closed shell, UKS otherwise (from ``mol.spin``). The initial
-    guess is one diagonalization of the Fock matrix built from the predicted
-    rho and spin density (J from the RI coefficients, XC on the grid), so
-    ``to_scf(p, mol, "wb97m-v").kernel()`` runs the SCF from the prediction
-    and the object is then used as any PySCF calculation.
+    The guess Fock matrix has ``mf``'s functional on the predicted rho and spin
+    density (J from the RI coefficients, XC through PySCF's NumInt), exact
+    exchange from the orbitals of the same matrix with PBE in place of the
+    hybrid's semilocal part, and a GGA in place of a meta-GGA (ωB97X-V for
+    ωB97M-V). ``to_scf(p, dft.RKS(mol, xc="wb97m-v")).kernel()`` runs the SCF
+    from the prediction; ``.to_gpu()`` before or after keeps the guess.
     """
 
 

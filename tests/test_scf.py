@@ -29,49 +29,39 @@ def _fitted(mf, mol) -> Prediction:
     )
 
 
-@pytest.mark.parametrize(
-    ("xc", "strict"),
-    [
-        ("pbe", True),
-        ("b3lyp", True),
-        # the PBE guess potential misses the long-range exchange: no gain on water
-        ("wb97x", False),
-    ],
-)
-def test_closed_shell_starts_close_to_the_solution(xc, strict):
-    mol = gto.M(
-        atom="O 0 0 0; H 0.757 0.587 0; H -0.757 0.587 0", basis="def2-svp", verbose=0
-    )
+WATER = "O 0 0 0; H 0.757 0.587 0; H -0.757 0.587 0"
+
+
+@pytest.mark.parametrize("xc", ["pbe", "b3lyp", "wb97x", "wb97m-v"])
+def test_closed_shell_starts_close_to_the_solution(xc):
+    mol = gto.M(atom=WATER, basis="def2-svp", verbose=0)
     reference = dft.RKS(mol, xc=xc)
     n_default = _cycles(reference)
-    mf = to_scf(_fitted(reference, mol), mol, xc)
-    assert isinstance(mf, dft.rks.RKS)
-    n = _cycles(mf)
-    assert n < n_default if strict else n <= n_default
+    mf = to_scf(_fitted(reference, mol), dft.RKS(mol, xc=xc))
+    assert _cycles(mf) < n_default
     assert mf.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
 
 
-def test_guess_survives_to_gpu():
-    pytest.importorskip("gpu4pyscf")
-    cupy = pytest.importorskip("cupy")
-    mol = gto.M(
-        atom="O 0 0 0; H 0.757 0.587 0; H -0.757 0.587 0", basis="def2-svp", verbose=0
-    )
-    reference = dft.RKS(mol, xc="b3lyp").to_gpu()
-    n_default = _cycles(reference)
-    mf = to_scf(_fitted(reference.to_cpu(), mol), mol, "b3lyp")
-    gpu = mf.to_gpu()
-    assert cupy.asnumpy(gpu.init_guess) == pytest.approx(mf.init_guess, abs=1e-12)
-    assert _cycles(gpu) < n_default
-    assert gpu.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
-
-
-def test_open_shell_uses_both_spin_channels():
+@pytest.mark.parametrize("xc", ["pbe", "wb97m-v"])
+def test_open_shell_uses_both_spin_channels(xc):
     mol = gto.M(atom="O 0 0 0; H 0 0 0.97", basis="def2-svp", spin=1, verbose=0)
-    reference = dft.UKS(mol, xc="pbe")
+    reference = dft.UKS(mol, xc=xc)
     n_default = _cycles(reference)
-    mf = to_scf(_fitted(reference, mol), mol, "pbe", conv_tol=1e-10)
-    assert isinstance(mf, dft.uks.UKS) and mf.conv_tol == 1e-10
+    mf = to_scf(_fitted(reference, mol), dft.UKS(mol, xc=xc))
     assert mf.init_guess.shape == (2, mol.nao, mol.nao)
     assert _cycles(mf) < n_default
     assert mf.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
+
+
+def test_gpu_object_gives_the_cpu_guess():
+    pytest.importorskip("gpu4pyscf")
+    cupy = pytest.importorskip("cupy")
+    mol = gto.M(atom=WATER, basis="def2-svp", verbose=0)
+    reference = dft.RKS(mol, xc="wb97m-v").run()
+    n_default = _cycles(dft.RKS(mol, xc="wb97m-v").to_gpu())
+    prediction = _fitted(reference, mol)
+    cpu = to_scf(prediction, dft.RKS(mol, xc="wb97m-v"))
+    gpu = to_scf(prediction, dft.RKS(mol, xc="wb97m-v").to_gpu())
+    assert cupy.asnumpy(gpu.init_guess) == pytest.approx(cpu.init_guess, abs=1e-8)
+    assert _cycles(gpu) < n_default
+    assert gpu.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
