@@ -162,8 +162,16 @@ def to_scf(prediction: Prediction, mf):
     h = mf.get_hcore()
     xp = importlib.import_module(type(h).__module__.split(".")[0])
     gpu = xp is not np
-    if mf.grids.coords is None:
-        mf.grids.build()
+
+    def built(grids):
+        """``grids`` built and pruned as ``mf`` does on its first iteration."""
+        if grids.coords is None:
+            grids.build()
+            total = _rho_on_grid(auxmol, rho[None], grids)[0, 0]
+            grids.prune_by_density_(total, mf.small_rho_cutoff)
+        return grids
+
+    built(mf.grids)
     channels = np.stack([(rho + m) / 2, (rho - m) / 2]) if unrestricted else rho[None]
     on_grid = _rho_on_grid(auxmol, channels, mf.grids)
 
@@ -193,9 +201,7 @@ def to_scf(prediction: Prediction, mf):
         fock = h + _coulomb(mol, auxmol, rho)
     nlc = xc if dft.libxc.is_nlc(xc) else (mf.nlc if xc == mf.xc and mf.nlc else None)
     if nlc:
-        if mf.nlcgrids.coords is None:
-            mf.nlcgrids.build()
-        total = _rho_on_grid(auxmol, rho[None], mf.nlcgrids)
+        total = _rho_on_grid(auxmol, rho[None], built(mf.nlcgrids))
         fock = fock + nr("nr_nlc_vxc", mf.nlcgrids, nlc, total)
     s = mf.get_ovlp()
 
