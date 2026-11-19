@@ -16,7 +16,7 @@ _J_FLOATS = 100_000_000
 
 #: GGA functional of the guess for a meta-GGA target, whose τ is not known from
 #: ρ. Other meta-GGAs fall back to PBE.
-GGA_FOR_META_GGA = {"WB97M-V": "wb97x-v"}
+GGA_FOR_META_GGA = {"WB97M-V": "wb97x-v", "WB97M-D4": "wb97x-v"}
 
 
 def _coulomb(mol: gto.Mole, auxmol: gto.Mole, coeffs: np.ndarray) -> np.ndarray:
@@ -79,7 +79,7 @@ class _PredictedDensity(numint.NumInt):
     """
     ``NumInt`` that reads the density of a DM tagged with ``aux_rho``.
 
-    PySCF's ``nr_rks``, ``nr_uks`` and ``nr_nlc_vxc`` see the density only
+    PySCF's ``nr_rks`` and ``nr_uks`` see the density only
     through :meth:`_gen_rho_evaluator`; here it returns the tagged ρ and ∇ρ
     (4, ngrids) block by block.
     """
@@ -101,7 +101,7 @@ class _PredictedDensity(numint.NumInt):
 @contextlib.contextmanager
 def _predicted_density_on_gpu(channels):
     """
-    gpu4pyscf's ``nr_rks``, ``nr_uks`` and ``nr_nlc_vxc`` evaluate ρ with the
+    gpu4pyscf's ``nr_rks`` and ``nr_uks`` evaluate ρ with the
     module function ``eval_rho``, per grid block in order, each GPU on its
     range of the grid, α then β for UKS. Within this context ``eval_rho``
     returns the next block of ``channels`` (n, 4, ngrids) instead.
@@ -138,18 +138,21 @@ def to_scf(prediction: Prediction, mf):
     Set the initial guess of the Kohn-Sham object ``mf`` from the prediction.
 
     The guess is the occupied space of the Fock matrix of ``mf``'s functional
-    with J, the semilocal and the VV10 terms from the predicted ρ (and m for
-    UKS: ρα,β = (ρ ± m)/2). The exact exchange of a hybrid needs orbitals: it
-    comes from those of the same Fock matrix with PBE in place of the hybrid's
+    with J and the semilocal terms from the predicted ρ (and m for UKS:
+    ρα,β = (ρ ± m)/2). The exact exchange of a hybrid needs orbitals: it comes
+    from those of the same Fock matrix with PBE in place of the hybrid's
     semilocal part, which alone is an incomplete functional. τ is not known
     from ρ, so a meta-GGA is replaced in the guess by :data:`GGA_FOR_META_GGA`
-    (ωB97X-V for ωB97M-V); the SCF itself is ``mf``'s functional. The models
-    are trained on ωB97M-V densities: another functional starts off its target.
+    (the semilocal part of ωB97X-V for ωB97M), and VV10, whose cost grows with
+    the square of the grid, is left out; the SCF itself is ``mf``'s
+    functional. The models are trained on ωB97M densities, best matched by
+    ωB97M-D4 (dispersion does not enter the density); another functional
+    starts off its target.
 
     The grids, exact exchange, diagonalization and occupations are ``mf``'s,
     and so is its ``NumInt`` code: a GPU object (``.to_gpu()``) computes the
     whole guess on the GPU, J with gpu4pyscf's 3-centre integrals. Returns ``mf``:
-    ``to_scf(p, dft.RKS(mol, xc="wb97m-v")).kernel()`` runs the SCF from the
+    ``to_scf(p, dft.RKS(mol, xc="wb97m-d4")).kernel()`` runs the SCF from the
     prediction.
     """
     mol = mf.mol
@@ -163,35 +166,29 @@ def to_scf(prediction: Prediction, mf):
     xp = importlib.import_module(type(h).__module__.split(".")[0])
     gpu = xp is not np
 
-    def built(grids):
-        """``grids`` built and pruned as ``mf`` does on its first iteration."""
-        if grids.coords is None:
-            grids.build()
-            total = _rho_on_grid(auxmol, rho[None], grids)[0, 0]
-            grids.prune_by_density_(total, mf.small_rho_cutoff)
-        return grids
-
-    built(mf.grids)
+    grids = mf.grids
+    if grids.coords is None:  # built and pruned as mf does on its first iteration
+        grids.build()
+        total = _rho_on_grid(auxmol, rho[None], grids)[0, 0]
+        grids.prune_by_density_(total, mf.small_rho_cutoff)
     channels = np.stack([(rho + m) / 2, (rho - m) / 2]) if unrestricted else rho[None]
-    on_grid = _rho_on_grid(auxmol, channels, mf.grids)
+    on_grid = _rho_on_grid(auxmol, channels, grids)
+    kind = "nr_uks" if unrestricted else "nr_rks"
 
-    def nr(kind, grids, name, values):
-        """``mf``'s ``NumInt`` method ``kind`` on the predicted density ``values``."""
+    def semilocal(name):
+        """V_xc of ``name`` on the predicted density, with ``mf``'s ``NumInt`` code."""
         if gpu:
             from gpu4pyscf.dft.numint import NumInt
 
             dm = xp.zeros((mol.nao, mol.nao))
-            dms = (dm, dm) if kind == "nr_uks" else dm
-            with _predicted_density_on_gpu(values):
+            dms = (dm, dm) if unrestricted else dm
+            with _predicted_density_on_gpu(on_grid):
                 return getattr(NumInt(), kind)(mol, grids, name, dms)[2]
         tagged = [
-            lib.tag_array(np.zeros((mol.nao, mol.nao)), aux_rho=v) for v in values
+            lib.tag_array(np.zeros((mol.nao, mol.nao)), aux_rho=v) for v in on_grid
         ]
-        dms = tagged if kind == "nr_uks" else tagged[0]
+        dms = tagged if unrestricted else tagged[0]
         return getattr(_PredictedDensity(), kind)(mol, grids, name, dms)[2]
-
-    def semilocal(name):
-        return nr("nr_uks" if unrestricted else "nr_rks", mf.grids, name, on_grid)
 
     if gpu:
         from gpu4pyscf.df.int3c2e_bdiv import contract_int3c2e_auxvec
@@ -199,10 +196,6 @@ def to_scf(prediction: Prediction, mf):
         fock = h + contract_int3c2e_auxvec(mol, auxmol, xp.asarray(rho))
     else:
         fock = h + _coulomb(mol, auxmol, rho)
-    nlc = xc if dft.libxc.is_nlc(xc) else (mf.nlc if xc == mf.xc and mf.nlc else None)
-    if nlc:
-        total = _rho_on_grid(auxmol, rho[None], built(mf.nlcgrids))
-        fock = fock + nr("nr_nlc_vxc", mf.nlcgrids, nlc, total)
     s = mf.get_ovlp()
 
     def density_matrix(f):

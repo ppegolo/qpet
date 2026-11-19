@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 from pyscf import dft, gto
 
 from qpet import Prediction, RIDensity, to_scf
 
 AUX = "def2-universal-jfit"
+WB97M_D4 = pytest.param(
+    "wb97m-d4",
+    marks=pytest.mark.skipif(
+        importlib.util.find_spec("pyscf.dispersion") is None,
+        reason="D4 needs pyscf-dispersion",
+    ),
+)
 
 
 def _cycles(mf) -> int:
@@ -32,7 +41,7 @@ def _fitted(mf, mol) -> Prediction:
 WATER = "O 0 0 0; H 0.757 0.587 0; H -0.757 0.587 0"
 
 
-@pytest.mark.parametrize("xc", ["pbe", "b3lyp", "wb97x", "wb97m-v"])
+@pytest.mark.parametrize("xc", ["pbe", "b3lyp", "wb97x", "wb97m-v", WB97M_D4])
 def test_closed_shell_starts_close_to_the_solution(xc):
     mol = gto.M(atom=WATER, basis="def2-svp", verbose=0)
     reference = dft.RKS(mol, xc=xc)
@@ -42,7 +51,7 @@ def test_closed_shell_starts_close_to_the_solution(xc):
     assert mf.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
 
 
-@pytest.mark.parametrize("xc", ["pbe", "wb97m-v"])
+@pytest.mark.parametrize("xc", ["pbe", "wb97m-v", WB97M_D4])
 def test_open_shell_uses_both_spin_channels(xc):
     mol = gto.M(atom="O 0 0 0; H 0 0 0.97", basis="def2-svp", spin=1, verbose=0)
     reference = dft.UKS(mol, xc=xc)
