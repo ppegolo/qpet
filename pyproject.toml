@@ -5,17 +5,17 @@ requires-python = ">=3.12"
 
 readme = "README.md"
 license = "MIT"
-description = "Interface metatomic ML density models with PySCF: density and electrostatic-potential calculators, plus Gaussian CUBE export."
+description = "ML electron densities on PySCF molecules: predictions from metatomic models, potentials, multipoles, cube files and SCF guesses."
 authors = [{ name = "Paolo Pegolo" }]
 
 dependencies = [
-  "pyscf>=2.0.0",
+  "pyscf>=2.14",
   "numba",
   "scipy",
   "threadpoolctl",
-  "ase",
   "torch>=2.0.0",
   "metatomic-torch>=0.1.15",
+  "vesin",
 ]
 
 keywords = [
@@ -96,6 +96,12 @@ disable_error_code = [
 # annotating the kernel's parameters changes how Triton's tracer treats them.
 [[tool.mypy.overrides]]
 module = "qpet._esp_kernel"
+ignore_errors = true
+
+# Vendored petfast inference code, untyped upstream; covered by
+# tests/test_fast_backend.py against the metatomic backend.
+[[tool.mypy.overrides]]
+module = "qpet.backends.fast.*"
 ignore_errors = true
 
 # ----------------------------

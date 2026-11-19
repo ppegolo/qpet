@@ -12,7 +12,7 @@ from pyscf import gto
 from pyscf.data.nist import BOHR
 
 
-def _scalar(value: float, name: str, like: torch.Tensor):
+def _scalar(value: float, name: str, like: torch.Tensor) -> Any:
     from metatensor.torch import Labels, TensorBlock, TensorMap
 
     zero = torch.zeros((1, 1), dtype=torch.int32, device=like.device)
@@ -25,7 +25,9 @@ def _scalar(value: float, name: str, like: torch.Tensor):
     return TensorMap(Labels.single().to(device=like.device), [block])
 
 
-def system(mol: gto.Mole, cell: np.ndarray | None, dtype: torch.dtype, device: str):
+def system(
+    mol: gto.Mole, cell: np.ndarray | None, dtype: torch.dtype, device: str
+) -> Any:
     """metatomic ``System`` of ``mol`` (Å), with its charge and multiplicity.
 
     The types are the atomic numbers, not the ECP-reduced nuclear charges.

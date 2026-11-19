@@ -114,8 +114,8 @@ def write_cube(
 def read_cube(path: str | Path) -> Cube:
     with open(path) as f:
         lines = f.read().splitlines()
-    n_atoms, *origin = lines[2].split()[:4]
-    n_atoms = int(n_atoms)
+    first, *origin = lines[2].split()[:4]
+    n_atoms = int(first)
     head = np.array([line.split()[:4] for line in lines[3:6]], dtype=float)
     atoms = np.array([line.split()[:5] for line in lines[6 : 6 + n_atoms]], dtype=float)
     shape = tuple(int(n) for n in head[:, 0])

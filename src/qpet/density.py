@@ -23,7 +23,7 @@ from pyscf import df, gto, lib
 from qpet.basis import copy_nuclei, make_auxmol
 from qpet.conditioning import nuclear_charges_of
 from qpet.moments import get_ri_dipole, get_ri_quadrupole
-from qpet.normalize import aux_integrals, project
+from qpet.normalize import Metric, aux_integrals, project
 
 if TYPE_CHECKING:
     from metatensor.torch import TensorMap
@@ -135,7 +135,7 @@ class RIDensity:
         (coeffs,) = to_pyscf(tensor)
         return cls(auxmol, coeffs.detach().cpu().double().numpy(), nuclei=nuclei)
 
-    def normalized(self, target: float, metric: str = "coulomb") -> RIDensity:
+    def normalized(self, target: float, metric: Metric = "coulomb") -> RIDensity:
         """Copy projected to integrate to ``target``, see :func:`project`."""
         return RIDensity(
             self.auxmol,

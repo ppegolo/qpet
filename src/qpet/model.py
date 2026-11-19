@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from pyscf import gto
 
+from qpet.backends import Backend
 from qpet.basis import make_auxmol
 from qpet.density import Ensemble, RIDensity
 from qpet.normalize import Metric, aux_integrals, direction
@@ -91,6 +92,7 @@ class DensityModel:
             else None
             for role, name in heads.items()
         }
+        self.backend: Backend
         if backend == "metatomic":
             from qpet.backends.metatomic import MetatomicBackend
 
@@ -195,7 +197,7 @@ class DensityModel:
             )
 
         return Prediction(
-            rho=density("rho"),
+            rho=RIDensity(auxmol, coeffs["rho"]),
             spin=density("spin"),
             rho_ensemble=ensemble("rho"),
             spin_ensemble=ensemble("spin"),

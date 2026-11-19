@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+from collections.abc import Iterator
+from typing import Any
 
 import numpy as np
 from pyscf import df, dft, gto, lib
@@ -41,7 +43,7 @@ def _coulomb(mol: gto.Mole, auxmol: gto.Mole, coeffs: np.ndarray) -> np.ndarray:
     return j
 
 
-def _rho_on_grid(auxmol: gto.Mole, coeffs: np.ndarray, grids):
+def _rho_on_grid(auxmol: gto.Mole, coeffs: np.ndarray, grids: Any) -> Any:
     """
     ρ and ∇ρ of ``Σ_k c_k φ_k`` for each row of ``coeffs``, (n, 4, ngrids),
     zero where the fit goes negative. On the GPU for a gpu4pyscf grid.
@@ -75,7 +77,7 @@ def _rho_on_grid(auxmol: gto.Mole, coeffs: np.ndarray, grids):
     return rho
 
 
-class _PredictedDensity(numint.NumInt):
+class _PredictedDensity(numint.NumInt):  # type: ignore[misc]
     """
     ``NumInt`` that reads the density of a DM tagged with ``aux_rho``.
 
@@ -84,13 +86,20 @@ class _PredictedDensity(numint.NumInt):
     (4, ngrids) block by block.
     """
 
-    def _gen_rho_evaluator(self, mol, dms, hermi=0, with_lapl=True, grids=None):
+    def _gen_rho_evaluator(
+        self,
+        mol: gto.Mole,
+        dms: Any,
+        hermi: int = 0,
+        with_lapl: bool = True,
+        grids: Any = None,
+    ) -> Any:
         rho = getattr(dms, "aux_rho", None)
         if rho is None:
             return super()._gen_rho_evaluator(mol, dms, hermi, with_lapl, grids)
         p1 = 0
 
-        def make_rho(idm, ao, mask, xctype):
+        def make_rho(idm: int, ao: np.ndarray, mask: Any, xctype: str) -> np.ndarray:
             nonlocal p1
             p0, p1 = p1, p1 + ao.shape[-2]
             return (rho[0, p0:p1] if xctype == "LDA" else rho[:, p0:p1]).copy()
@@ -99,7 +108,7 @@ class _PredictedDensity(numint.NumInt):
 
 
 @contextlib.contextmanager
-def _predicted_density_on_gpu(channels):
+def _predicted_density_on_gpu(channels: Any) -> Iterator[None]:
     """
     gpu4pyscf's ``nr_rks`` and ``nr_uks`` evaluate ρ with the
     module function ``eval_rho``, per grid block in order, each GPU on its
@@ -112,7 +121,9 @@ def _predicted_density_on_gpu(channels):
     ngrids = channels.shape[-1]
     position: dict[int, list[int]] = {}
 
-    def eval_rho(mol, ao, dm, *args, xctype="LDA", **kwargs):
+    def eval_rho(
+        mol: Any, ao: Any, dm: Any, *args: Any, xctype: str = "LDA", **kwargs: Any
+    ) -> Any:
         device = cupy.cuda.Device().id
         start, calls = position.setdefault(
             device, [gpu_numint.gen_grid_range(ngrids, device)[0], 0]
@@ -133,7 +144,7 @@ def _predicted_density_on_gpu(channels):
         gpu_numint.eval_rho = original
 
 
-def to_scf(prediction: Prediction, mf):
+def to_scf(prediction: Prediction, mf: Any) -> Any:
     """
     Set the initial guess of the Kohn-Sham object ``mf`` from the prediction.
 
@@ -175,7 +186,7 @@ def to_scf(prediction: Prediction, mf):
     on_grid = _rho_on_grid(auxmol, channels, grids)
     kind = "nr_uks" if unrestricted else "nr_rks"
 
-    def semilocal(name):
+    def semilocal(name: str) -> Any:
         """V_xc of ``name`` on the predicted density, with ``mf``'s ``NumInt`` code."""
         if gpu:
             from gpu4pyscf.dft.numint import NumInt
@@ -198,7 +209,7 @@ def to_scf(prediction: Prediction, mf):
         fock = h + _coulomb(mol, auxmol, rho)
     s = mf.get_ovlp()
 
-    def density_matrix(f):
+    def density_matrix(f: Any) -> Any:
         e, c = mf.eig(f, s)
         return mf.make_rdm1(c, mf.get_occ(e, c))
 
