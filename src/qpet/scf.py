@@ -148,7 +148,7 @@ def to_scf(prediction: Prediction, mf):
 
     The grids, exact exchange, diagonalization and occupations are ``mf``'s,
     and so is its ``NumInt`` code: a GPU object (``.to_gpu()``) computes the
-    guess on the GPU, except J. Returns ``mf``:
+    whole guess on the GPU, J with gpu4pyscf's 3-centre integrals. Returns ``mf``:
     ``to_scf(p, dft.RKS(mol, xc="wb97m-v")).kernel()`` runs the SCF from the
     prediction.
     """
@@ -185,7 +185,12 @@ def to_scf(prediction: Prediction, mf):
     def semilocal(name):
         return nr("nr_uks" if unrestricted else "nr_rks", mf.grids, name, on_grid)
 
-    fock = h + xp.asarray(_coulomb(mol, auxmol, rho))
+    if gpu:
+        from gpu4pyscf.df.int3c2e_bdiv import contract_int3c2e_auxvec
+
+        fock = h + contract_int3c2e_auxvec(mol, auxmol, xp.asarray(rho))
+    else:
+        fock = h + _coulomb(mol, auxmol, rho)
     nlc = xc if dft.libxc.is_nlc(xc) else (mf.nlc if xc == mf.xc and mf.nlc else None)
     if nlc:
         if mf.nlcgrids.coords is None:
