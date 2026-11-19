@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 
 import numpy as np
@@ -10,7 +11,7 @@ from pyscf.dft import numint
 
 from qpet.model import Prediction
 
-_GRID_CHUNK = 16384
+_GRID_CHUNK = 4096
 _J_FLOATS = 100_000_000
 
 #: GGA functional of the guess for a meta-GGA target, whose τ is not known from
@@ -40,30 +41,53 @@ def _coulomb(mol: gto.Mole, auxmol: gto.Mole, coeffs: np.ndarray) -> np.ndarray:
     return j
 
 
+def _rho_on_grid(auxmol: gto.Mole, coeffs: np.ndarray, grids):
+    """
+    ρ and ∇ρ of ``Σ_k c_k φ_k`` for each row of ``coeffs``, (n, 4, ngrids),
+    zero where the fit goes negative. On the GPU for a gpu4pyscf grid.
+    """
+    if isinstance(grids.coords, np.ndarray):
+        rho = np.empty((len(coeffs), 4, grids.weights.size))
+        for p0 in range(0, grids.weights.size, _GRID_CHUNK):
+            aux = numint.eval_ao(auxmol, grids.coords[p0 : p0 + _GRID_CHUNK], deriv=1)
+            rho[..., p0 : p0 + _GRID_CHUNK] = np.einsum("xgk,ck->cxg", aux, coeffs)
+    else:
+        import cupy
+        from gpu4pyscf.dft.numint import NumInt
+
+        ni = NumInt().build(auxmol, None)
+        opt = ni.gdftopt
+        c = opt.sort_orbitals(cupy.asarray(coeffs), axis=[1])
+        rho = cupy.empty((len(coeffs), 4, grids.weights.size))
+        # the grid caches the screening of one basis: the orbital one, not this
+        orbital_screening, grids._non0ao_idx = grids._non0ao_idx, None
+        try:
+            p1 = 0
+            for ao, idx, weight, _ in ni.block_loop(
+                opt._sorted_mol, grids, opt._sorted_mol.nao, 1
+            ):
+                p0, p1 = p1, p1 + weight.size
+                rho[..., p0:p1] = cupy.einsum("xkg,ck->cxg", ao, c[:, idx])
+        finally:
+            grids._non0ao_idx = orbital_screening
+    for r in rho:
+        r[:, r[0] < 0] = 0
+    return rho
+
+
 class _PredictedDensity(numint.NumInt):
     """
-    ``NumInt`` that reads the density of a DM tagged with ``aux_coeffs``.
+    ``NumInt`` that reads the density of a DM tagged with ``aux_rho``.
 
     PySCF's ``nr_rks``, ``nr_uks`` and ``nr_nlc_vxc`` see the density only
-    through :meth:`_gen_rho_evaluator`; here it returns ρ and ∇ρ of
-    ``Σ_k c_k φ_k`` on the grid, zero where the fit goes negative.
+    through :meth:`_gen_rho_evaluator`; here it returns the tagged ρ and ∇ρ
+    (4, ngrids) block by block.
     """
 
-    def __init__(self, auxmol: gto.Mole) -> None:
-        super().__init__()
-        self.auxmol = auxmol
-
     def _gen_rho_evaluator(self, mol, dms, hermi=0, with_lapl=True, grids=None):
-        coeffs = getattr(dms, "aux_coeffs", None)
-        if coeffs is None:
+        rho = getattr(dms, "aux_rho", None)
+        if rho is None:
             return super()._gen_rho_evaluator(mol, dms, hermi, with_lapl, grids)
-        rho = np.empty((4, grids.weights.size))
-        for p0 in range(0, grids.weights.size, _GRID_CHUNK):
-            aux = numint.eval_ao(
-                self.auxmol, grids.coords[p0 : p0 + _GRID_CHUNK], deriv=1
-            )
-            rho[:, p0 : p0 + _GRID_CHUNK] = aux @ coeffs
-        rho[:, rho[0] < 0] = 0
         p1 = 0
 
         def make_rho(idm, ao, mask, xctype):
@@ -72,6 +96,41 @@ class _PredictedDensity(numint.NumInt):
             return (rho[0, p0:p1] if xctype == "LDA" else rho[:, p0:p1]).copy()
 
         return make_rho, 1, mol.nao
+
+
+@contextlib.contextmanager
+def _predicted_density_on_gpu(channels):
+    """
+    gpu4pyscf's ``nr_rks``, ``nr_uks`` and ``nr_nlc_vxc`` evaluate ρ with the
+    module function ``eval_rho``, per grid block in order, each GPU on its
+    range of the grid, α then β for UKS. Within this context ``eval_rho``
+    returns the next block of ``channels`` (n, 4, ngrids) instead.
+    """
+    import cupy
+    import gpu4pyscf.dft.numint as gpu_numint
+
+    ngrids = channels.shape[-1]
+    position: dict[int, list[int]] = {}
+
+    def eval_rho(mol, ao, dm, *args, xctype="LDA", **kwargs):
+        device = cupy.cuda.Device().id
+        start, calls = position.setdefault(
+            device, [gpu_numint.gen_grid_range(ngrids, device)[0], 0]
+        )
+        channel = calls % len(channels)
+        block = channels[channel, :, start : start + ao.shape[-1]]
+        position[device] = [
+            start + ao.shape[-1] if channel == len(channels) - 1 else start,
+            calls + 1,
+        ]
+        return cupy.array(block[0] if xctype == "LDA" else block)
+
+    original = gpu_numint.eval_rho
+    gpu_numint.eval_rho = eval_rho
+    try:
+        yield
+    finally:
+        gpu_numint.eval_rho = original
 
 
 def to_scf(prediction: Prediction, mf):
@@ -87,42 +146,52 @@ def to_scf(prediction: Prediction, mf):
     (ωB97X-V for ωB97M-V); the SCF itself is ``mf``'s functional. The models
     are trained on ωB97M-V densities: another functional starts off its target.
 
-    Exact exchange, diagonalization and occupations use ``mf``'s own methods,
-    so a GPU object (``.to_gpu()``) computes them on the GPU. Returns ``mf``:
+    The grids, exact exchange, diagonalization and occupations are ``mf``'s,
+    and so is its ``NumInt`` code: a GPU object (``.to_gpu()``) computes the
+    guess on the GPU, except J. Returns ``mf``:
     ``to_scf(p, dft.RKS(mol, xc="wb97m-v")).kernel()`` runs the SCF from the
     prediction.
     """
     mol = mf.mol
-    ni = _PredictedDensity(prediction.rho.auxmol)
     xc = mf.xc
-    if ni._xc_type(xc) == "MGGA":
+    if dft.libxc.xc_type(xc) == "MGGA":
         xc = GGA_FOR_META_GGA.get(xc.upper(), "pbe")
     unrestricted = mf.istype("UHF")
-    rho = prediction.rho.coeffs
+    auxmol, rho = prediction.rho.auxmol, prediction.rho.coeffs
     m = prediction.spin.coeffs if prediction.spin is not None else 0 * rho
-    grids = dft.Grids(mol)
-    grids.level = mf.grids.level
-    grids.build()
-
-    def tagged(coeffs):
-        return lib.tag_array(np.zeros((mol.nao, mol.nao)), aux_coeffs=coeffs)
-
-    def semilocal(name):
-        if unrestricted:
-            dms = [tagged((rho + m) / 2), tagged((rho - m) / 2)]
-            return xp.asarray(ni.nr_uks(mol, grids, name, dms)[2])
-        return xp.asarray(ni.nr_rks(mol, grids, name, tagged(rho))[2])
-
     h = mf.get_hcore()
     xp = importlib.import_module(type(h).__module__.split(".")[0])
-    fock = _coulomb(mol, prediction.rho.auxmol, rho)
+    gpu = xp is not np
+    if mf.grids.coords is None:
+        mf.grids.build()
+    channels = np.stack([(rho + m) / 2, (rho - m) / 2]) if unrestricted else rho[None]
+    on_grid = _rho_on_grid(auxmol, channels, mf.grids)
+
+    def nr(kind, grids, name, values):
+        """``mf``'s ``NumInt`` method ``kind`` on the predicted density ``values``."""
+        if gpu:
+            from gpu4pyscf.dft.numint import NumInt
+
+            dm = xp.zeros((mol.nao, mol.nao))
+            dms = (dm, dm) if kind == "nr_uks" else dm
+            with _predicted_density_on_gpu(values):
+                return getattr(NumInt(), kind)(mol, grids, name, dms)[2]
+        tagged = [
+            lib.tag_array(np.zeros((mol.nao, mol.nao)), aux_rho=v) for v in values
+        ]
+        dms = tagged if kind == "nr_uks" else tagged[0]
+        return getattr(_PredictedDensity(), kind)(mol, grids, name, dms)[2]
+
+    def semilocal(name):
+        return nr("nr_uks" if unrestricted else "nr_rks", mf.grids, name, on_grid)
+
+    fock = h + xp.asarray(_coulomb(mol, auxmol, rho))
     nlc = xc if dft.libxc.is_nlc(xc) else (mf.nlc if xc == mf.xc and mf.nlc else None)
     if nlc:
-        nlcgrids = dft.Grids(mol)
-        nlcgrids.level = mf.nlcgrids.level
-        nlcgrids.build()
-        fock = fock + ni.nr_nlc_vxc(mol, nlcgrids, nlc, tagged(rho))[2]
-    fock = h + xp.asarray(fock)
+        if mf.nlcgrids.coords is None:
+            mf.nlcgrids.build()
+        total = _rho_on_grid(auxmol, rho[None], mf.nlcgrids)
+        fock = fock + nr("nr_nlc_vxc", mf.nlcgrids, nlc, total)
     s = mf.get_ovlp()
 
     def density_matrix(f):
@@ -133,7 +202,7 @@ def to_scf(prediction: Prediction, mf):
         mf.init_guess = density_matrix(fock + semilocal(xc))
         return mf
     dm = density_matrix(fock + semilocal("pbe"))
-    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(xc, spin=mol.spin)
+    omega, alpha, hyb = numint.NumInt().rsh_and_hybrid_coeff(xc, spin=mol.spin)
     vk = hyb * mf.get_k(mol, dm) if hyb else 0
     if omega and alpha != hyb:
         vk = vk + (alpha - hyb) * mf.get_k(mol, dm, omega=omega)

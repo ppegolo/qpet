@@ -53,15 +53,19 @@ def test_open_shell_uses_both_spin_channels(xc):
     assert mf.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
 
 
-def test_gpu_object_gives_the_cpu_guess():
+@pytest.mark.parametrize(
+    ("atom", "spin", "ks"),
+    [(WATER, 0, dft.RKS), ("O 0 0 0; H 0 0 0.97", 1, dft.UKS)],
+)
+def test_gpu_object_gives_the_cpu_guess(atom, spin, ks):
     pytest.importorskip("gpu4pyscf")
     cupy = pytest.importorskip("cupy")
-    mol = gto.M(atom=WATER, basis="def2-svp", verbose=0)
-    reference = dft.RKS(mol, xc="wb97m-v").run()
-    n_default = _cycles(dft.RKS(mol, xc="wb97m-v").to_gpu())
+    mol = gto.M(atom=atom, basis="def2-svp", spin=spin, verbose=0)
+    reference = ks(mol, xc="wb97m-v").run()
+    n_default = _cycles(ks(mol, xc="wb97m-v").to_gpu())
     prediction = _fitted(reference, mol)
-    cpu = to_scf(prediction, dft.RKS(mol, xc="wb97m-v"))
-    gpu = to_scf(prediction, dft.RKS(mol, xc="wb97m-v").to_gpu())
+    cpu = to_scf(prediction, ks(mol, xc="wb97m-v"))
+    gpu = to_scf(prediction, ks(mol, xc="wb97m-v").to_gpu())
     assert cupy.asnumpy(gpu.init_guess) == pytest.approx(cpu.init_guess, abs=1e-8)
     assert _cycles(gpu) < n_default
     assert gpu.e_tot == pytest.approx(reference.e_tot, abs=1e-7)
