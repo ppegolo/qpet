@@ -7,9 +7,17 @@ Lengths are in bohr except in :func:`build_mole` and file I/O.
 """
 
 from ._tensormap import tensormap_coefficients
+from .backends.metatomic import to_system
 from .basis import make_auxmol
-from .density import DMDensity, Ensemble, RIDensity, nuclear_potential
-from .grids import CubeGrid, becke_grid, read_cube, write_cube
+from .density import (
+    DMDensity,
+    Ensemble,
+    RIDensity,
+    fit_coefficients,
+    nmae,
+    nuclear_potential,
+)
+from .grids import CubeGrid, atomic_becke_grid, becke_grid, read_cube, write_cube
 from .model import DensityModel, Prediction
 from .mole import build_mole
 from .normalize import aux_integrals, direction, project
@@ -28,15 +36,19 @@ __all__ = [
     "Prediction",
     "RIDensity",
     "__version__",
+    "atomic_becke_grid",
     "aux_integrals",
     "becke_grid",
     "build_mole",
     "direction",
+    "fit_coefficients",
     "make_auxmol",
+    "nmae",
     "nuclear_potential",
     "project",
     "read_cube",
     "tensormap_coefficients",
     "to_scf",
+    "to_system",
     "write_cube",
 ]

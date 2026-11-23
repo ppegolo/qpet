@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+from pyscf import gto
 
 if TYPE_CHECKING:
     import torch
@@ -18,6 +19,70 @@ def tensormap_coefficients(tensor: TensorMap, n_members: int = 1) -> list[np.nda
     (n_members, naux) for an ensemble output.
     """
     return [c.detach().cpu().double().numpy() for c in to_pyscf(tensor, n_members)]
+
+
+def from_pyscf(auxmol: gto.Mole, coeffs: np.ndarray) -> TensorMap:
+    """
+    Coefficients (naux,) or members (n_members, naux) in the layout of a model output.
+
+    Blocks keyed by (l, 1, Z), samples (system 0, atom), components m with the
+    l=1 order (y, z, x), properties the radial channels (member-major
+    ``(ensemble_member, n)`` for an ensemble, as metatrain's LLPR writes them).
+    """
+    import torch
+    from metatensor.torch import Labels, TensorBlock, TensorMap
+
+    members = np.atleast_2d(coeffs)
+    blocks: dict[tuple[int, int], dict[int, list[np.ndarray]]] = {}
+    ao_loc = auxmol.ao_loc_nr()
+    for ib in range(auxmol.nbas):
+        ell, atom = int(auxmol.bas_angular(ib)), int(auxmol.bas_atom(ib))
+        key = (ell, gto.charge(auxmol.atom_pure_symbol(atom)))
+        values = members[:, ao_loc[ib] : ao_loc[ib + 1]].reshape(
+            len(members), auxmol.bas_nctr(ib), 2 * ell + 1
+        )
+        if ell == 1:
+            values = values[:, :, [1, 2, 0]]
+        blocks.setdefault(key, {}).setdefault(atom, []).append(values)
+    keys, out = [], []
+    for (ell, z), atoms in sorted(blocks.items()):
+        values = np.stack([np.concatenate(atoms[a], axis=1) for a in sorted(atoms)])
+        n_atoms, n_members, n_rad, n_m = values.shape
+        values = values.transpose(0, 3, 1, 2).reshape(n_atoms, n_m, n_members * n_rad)
+        if np.ndim(coeffs) > 1:
+            properties = Labels(
+                ["ensemble_member", "n"],
+                torch.cartesian_prod(
+                    torch.arange(n_members, dtype=torch.int32),
+                    torch.arange(n_rad, dtype=torch.int32),
+                ),
+            )
+        else:
+            properties = Labels(["n"], torch.arange(n_rad, dtype=torch.int32)[:, None])
+        keys.append([ell, 1, z])
+        out.append(
+            TensorBlock(
+                values=torch.tensor(values, dtype=torch.float64),
+                samples=Labels(
+                    ["system", "atom"],
+                    torch.tensor([[0, a] for a in sorted(atoms)], dtype=torch.int32),
+                ),
+                components=[
+                    Labels(
+                        ["o3_mu"],
+                        torch.arange(-ell, ell + 1, dtype=torch.int32)[:, None],
+                    )
+                ],
+                properties=properties,
+            )
+        )
+    return TensorMap(
+        Labels(
+            ["o3_lambda", "o3_sigma", "atom_type"],
+            torch.tensor(keys, dtype=torch.int32),
+        ),
+        out,
+    )
 
 
 def to_pyscf(tensor: TensorMap, n_members: int = 1) -> list[torch.Tensor]:

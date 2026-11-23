@@ -10,7 +10,7 @@ import pytest
 import torch
 from _dummy_model import fixed_model, to_tensormap
 
-from qpet import DensityModel, aux_integrals, direction
+from qpet import DensityModel, aux_integrals, direction, to_system
 
 RHO, SPIN, ENSEMBLE = "mtt::rho", "mtt::rho_spin", "mtt::aux::rho_ensemble"
 AUX = "def2-svp-jkfit"
@@ -134,3 +134,16 @@ def test_wrong_basis_names_the_system(water_ri):
 def test_unknown_head_role_raises(water_ri):
     with pytest.raises(ValueError, match="heads needs 'rho'"):
         DensityModel("unused.pt", aux_basis=AUX, heads={"spin": SPIN})
+
+
+def test_to_system_carries_elements_charge_and_multiplicity(
+    hydrogen_iodide_ri, water_cation
+):
+    mol = hydrogen_iodide_ri[0]
+    system = to_system(mol, dtype=torch.float64)
+    assert system.types.tolist() == [53, 1]
+    np.testing.assert_allclose(system.positions.numpy(), mol.atom_coords(unit="Ang"))
+    assert not system.pbc.any()
+    cation = to_system(water_cation)
+    assert cation.get_data("charge").block().values.item() == 1
+    assert cation.get_data("spin_multiplicity").block().values.item() == 2

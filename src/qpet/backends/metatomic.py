@@ -25,12 +25,18 @@ def _scalar(value: float, name: str, like: torch.Tensor) -> Any:
     return TensorMap(Labels.single().to(device=like.device), [block])
 
 
-def system(
-    mol: gto.Mole, cell: np.ndarray | None, dtype: torch.dtype, device: str
+def to_system(
+    mol: gto.Mole,
+    cell: np.ndarray | None = None,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: str = "cpu",
 ) -> Any:
     """metatomic ``System`` of ``mol`` (Å), with its charge and multiplicity.
 
     The types are the atomic numbers, not the ECP-reduced nuclear charges.
+
+    :param cell: lattice vectors as rows (bohr) of a periodic system.
     """
     from metatomic.torch import System
 
@@ -102,7 +108,9 @@ class MetatomicBackend:
         """Raw coefficients per output and molecule: (naux,) or (n_members, naux)."""
         from qpet._tensormap import to_pyscf
 
-        systems = [system(mol, cell, self.dtype, self.device) for mol in mols]
+        systems = [
+            to_system(mol, cell, dtype=self.dtype, device=self.device) for mol in mols
+        ]
         for nl in self.neighbors:
             nl.add_neighbor_list(systems=systems)
         with torch.no_grad():

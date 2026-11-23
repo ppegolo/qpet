@@ -7,8 +7,16 @@ import pytest
 from _dummy_model import to_tensormap
 from pyscf import gto, scf
 
-from qpet import DMDensity, Ensemble, RIDensity, becke_grid, tensormap_coefficients
-from qpet.density import _DIST_FLOOR, nuclear_potential
+from qpet import (
+    DMDensity,
+    Ensemble,
+    RIDensity,
+    becke_grid,
+    fit_coefficients,
+    nmae,
+    nuclear_potential,
+    tensormap_coefficients,
+)
 
 
 @pytest.fixture(scope="module")
@@ -44,9 +52,10 @@ def test_ri_potential_is_close_to_the_density_matrix(water_ri):
     assert np.abs(v_ri - v_dm).max() < 1e-3
 
 
-def test_dm_potential_is_nuclei_minus_int1e_grids(water_ri):
+@pytest.mark.parametrize("n_points", [20, 1200])
+def test_dm_potential_is_nuclei_minus_int1e_grids(water_ri, n_points):
     mol, dm, _, _ = water_ri
-    points = _shell(20, 3.0)
+    points = _shell(n_points, 3.0)
     electrons = np.einsum("pij,ij->p", mol.intor("int1e_grids", grids=points), dm)
     nuclei = nuclear_potential(mol.atom_coords(), mol.atom_charges(), points)
     np.testing.assert_allclose(
@@ -113,10 +122,12 @@ def test_from_chk_gives_total_and_spin_density(oh_radical):
     assert total.nuclei and not spin.nuclei
 
 
-def test_from_tensormap_round_trips(water_ri):
-    _, _, auxmol, coeffs = water_ri
+def test_tensormap_round_trips(hydrogen_iodide_ri):
+    _, _, auxmol, coeffs = hydrogen_iodide_ri
+    tensor = RIDensity(auxmol, coeffs).to_tensormap()
+    assert set(tensor.keys.column("atom_type").tolist()) == {1, 53}
     np.testing.assert_array_equal(
-        RIDensity.from_tensormap(to_tensormap(auxmol, coeffs), auxmol).coeffs, coeffs
+        RIDensity.from_tensormap(tensor, auxmol).coeffs, coeffs
     )
 
 
@@ -141,7 +152,72 @@ def test_bare_nucleus_is_coulomb():
     points = np.array([[1.0, 0, 0], [0, 2.0, 0], [0, 0, 4.0]])
     v = DMDensity(mol, np.zeros((mol.nao, mol.nao))).potential(points)
     np.testing.assert_allclose(v, 2.0 / np.linalg.norm(points, axis=1))
-    assert (
-        DMDensity(mol, np.zeros((1, 1))).potential(np.zeros((1, 3)))[0]
-        == 2.0 / _DIST_FLOOR
+
+
+def test_potential_at_a_nucleus_excludes_it(water_ri):
+    mol, dm, auxmol, coeffs = water_ri
+    r, z = mol.atom_coords(), mol.atom_charges()
+    others = z[1:] @ (1 / np.linalg.norm(r[1:] - r[0], axis=1))
+    with mol.with_rinv_origin(r[0]):
+        electrons = np.einsum("ij,ji", mol.intor("int1e_rinv"), dm)
+    v_dm = DMDensity(mol, dm).potential(r[:1], exclude=0)[0]
+    assert v_dm == pytest.approx(others - electrons, abs=1e-10)
+    point = gto.fakemol_for_charges(r[:1])
+    electrons = coeffs @ gto.mole.intor_cross("int2c2e", auxmol, point).ravel()
+    rho = RIDensity(auxmol, coeffs)
+    assert rho.potential(r[:1], exclude=0)[0] == pytest.approx(
+        others - electrons, abs=1e-10
+    )
+    members = Ensemble(auxmol, np.stack([coeffs, coeffs]))
+    np.testing.assert_allclose(
+        members.potential(r[:1], exclude=0)[:, 0], others - electrons, atol=1e-10
+    )
+    with np.errstate(divide="ignore"):
+        assert np.isinf(rho.potential(r[:1])[0])
+
+
+def test_density_matches_unscreened_basis_values(water_ri):
+    mol, dm, auxmol, coeffs = water_ri
+    points, _ = becke_grid(mol, level=1)
+    ao = mol.eval_gto("GTOval", points)
+    np.testing.assert_allclose(
+        DMDensity(mol, dm).density(points),
+        np.einsum("pi,ij,pj->p", ao, dm, ao),
+        atol=1e-10,
+    )
+    aux = auxmol.eval_gto("GTOval", points)
+    np.testing.assert_allclose(
+        RIDensity(auxmol, coeffs).density(points), aux @ coeffs, atol=1e-10
+    )
+    members = np.stack([coeffs, 2 * coeffs])
+    np.testing.assert_allclose(
+        Ensemble(auxmol, members).density(points), members @ aux.T, atol=1e-10
+    )
+
+
+def test_nmae_of_a_density_against_zero_is_100(water_ri):
+    mol, dm, _, _ = water_ri
+    points, weights = becke_grid(mol)
+    rho = DMDensity(mol, dm).density(points)
+    assert nmae(rho, 0 * rho, weights, mol.nelectron) == pytest.approx(100, abs=1e-3)
+    assert nmae(rho, 0.99 * rho, weights, mol.nelectron) == pytest.approx(1, abs=1e-5)
+
+
+def test_fit_coefficients_in_slices_and_batches(water_ri, monkeypatch):
+    mol, dm, auxmol, coeffs = water_ri
+    monkeypatch.setattr("qpet.density._FIT_FLOATS", 1)
+    np.testing.assert_allclose(fit_coefficients(mol, auxmol, dm), coeffs, atol=1e-10)
+    np.testing.assert_allclose(
+        fit_coefficients(mol, auxmol, np.stack([dm, 2 * dm])),
+        np.stack([coeffs, 2 * coeffs]),
+        atol=1e-10,
+    )
+
+
+def test_coulomb_distance_is_the_coulomb_norm_of_the_difference(water_ri):
+    _, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    d = 0.1 * coeffs
+    assert rho.coulomb_distance(RIDensity(auxmol, 0.9 * coeffs)) == pytest.approx(
+        d @ auxmol.intor("int2c2e") @ d
     )

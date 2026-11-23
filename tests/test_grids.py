@@ -5,7 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from qpet import CubeGrid, RIDensity, becke_grid, read_cube, write_cube
+from qpet import (
+    CubeGrid,
+    RIDensity,
+    atomic_becke_grid,
+    becke_grid,
+    read_cube,
+    write_cube,
+)
 
 
 def test_grid_encloses_the_positions_with_padding(water_ri):
@@ -44,3 +51,14 @@ def test_becke_grid_integrates_the_density(water_ri):
     assert weights @ RIDensity(auxmol, coeffs).density(points) == pytest.approx(
         mol.nelectron, abs=0.05
     )
+
+
+def test_atomic_becke_grid_is_the_becke_grid_by_atom(water_ri):
+    mol, _, auxmol, coeffs = water_ri
+    rho = RIDensity(auxmol, coeffs)
+    points, weights = becke_grid(mol)
+    by_atom, atomic_weights, atom = atomic_becke_grid(mol)
+    assert np.all(np.diff(atom) >= 0)
+    populations = np.bincount(atom, atomic_weights * rho.density(by_atom))
+    assert populations.sum() == pytest.approx(weights @ rho.density(points), abs=1e-10)
+    assert populations[0] > 7 and populations[1] == pytest.approx(populations[2])

@@ -72,6 +72,34 @@ def becke_grid(mol: gto.Mole, level: int = 3) -> tuple[np.ndarray, np.ndarray]:
     return grids.coords, grids.weights
 
 
+def atomic_becke_grid(
+    mol: gto.Mole, level: int = 3
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    The quadrature of :func:`becke_grid` with the atom of every point.
+
+    The weights of one atom integrate over its Becke cell:
+    ``np.bincount(atom, weights * f(points))`` are the atomic populations of ``f``.
+
+    :return: Points, weights and atom indices, ordered by atom.
+    """
+    grids = dft.Grids(mol)
+    grids.level = level
+    table = grids.gen_atomic_grids(
+        mol, grids.atom_grid, grids.radi_method, grids.level, grids.prune
+    )
+    points, weights = grids.get_partition(
+        mol,
+        table,
+        grids.radii_adjust,
+        grids.atomic_radii,
+        grids.becke_scheme,
+        concat=False,
+    )
+    atom = np.repeat(np.arange(mol.natm), [len(w) for w in weights])
+    return np.concatenate(points), np.concatenate(weights), atom
+
+
 def write_cube(
     path: str | Path,
     mol: gto.Mole,

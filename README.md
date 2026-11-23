@@ -36,12 +36,21 @@ mf.kernel()                   # the SCF starts from the predicted density
   `backend="fast"` runs the same weights through an inference-only
   reimplementation for large systems.
 - **`RIDensity`, `DMDensity`**: densities that carry their geometry, from RI
-  coefficients or from an AO density matrix: `density`, `potential`,
-  `integral`, `dipole`, `select_atoms`; `RIDensity.fit` is the Coulomb-metric
-  fit of a DFT density matrix, `RIDensity.normalized` the projection.
+  coefficients or from an AO density matrix: `density`, `potential`
+  (`exclude=i` for the potential at nucleus `i`), `integral`, `dipole`,
+  `quadrupole`, `select_atoms`. `RIDensity.fit` is the Coulomb-metric fit of a
+  DFT density matrix (`fit_coefficients` for several at once),
+  `RIDensity.normalized` the projection, `coulomb_distance` the Coulomb norm
+  of the difference of two densities, `to_tensormap`/`from_tensormap` the
+  layout of the training targets.
 - **`Ensemble`**: members of an LLPR ensemble, recentred on the prediction;
   their spread on any observable is the error estimate.
-- **`CubeGrid`, `becke_grid`, `write_cube`, `read_cube`**: grids and cube files.
+- **`becke_grid`, `atomic_becke_grid`, `nmae`**: quadrature grids (with the
+  atom of every point for Becke populations) and the normalized mean absolute
+  error of two densities on one.
+- **`CubeGrid`, `write_cube`, `read_cube`**: regular grids and cube files.
+- **`to_system`**: the metatomic `System` of a `Mole`, with its charge and
+  spin multiplicity, to call a model directly.
 - **`to_scf`**: the initial guess of a PySCF or gpu4pyscf Kohn-Sham object
   from the prediction (target functional on the predicted density, exact
   exchange from the orbitals of a first diagonalization).
@@ -53,7 +62,7 @@ pip install -e .   # pyscf, torch, metatomic, vesin, numba, scipy
 ```
 
 GPU features use gpu4pyscf and CuPy when installed (`to_scf` on a `.to_gpu()`
-object); the fast backend's export from a checkpoint needs metatrain.
+object, the integrals of `RIDensity.fit` and `DMDensity.potential`); the fast backend's export from a checkpoint needs metatrain.
 
 ## Development
 
