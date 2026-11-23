@@ -139,7 +139,7 @@ def _near_apply(data, panel_offset, col_offset, cols, ao0, ao1, x):  # type: ign
     """``J x`` from the stored panels; off-diagonal blocks apply their transpose too."""
     natm = len(ao0)
     partial = np.zeros((_NCHUNK, x.shape[0]))
-    for chunk in nb.prange(_NCHUNK):  # type: ignore[attr-defined]
+    for chunk in nb.prange(_NCHUNK):
         y = partial[chunk]
         for atom in range(chunk, natm, _NCHUNK):
             nrow = ao1[atom] - ao0[atom]
@@ -302,7 +302,7 @@ def _far_apply(coords, u, rnear, source, component, coefficient, pair, sign):  #
     natm, nmono = u.shape
     nder = source.shape[0]
     partial = np.zeros((_NCHUNK, natm, nmono))
-    for chunk in nb.prange(_NCHUNK):  # type: ignore[attr-defined]
+    for chunk in nb.prange(_NCHUNK):
         psi = partial[chunk]
         deriv = np.zeros(nder)
         xyz = np.ones(4)
@@ -381,7 +381,7 @@ def _schwarz_apply(inverse, inverse_offset, index, index_offset, r):  # type: ig
     """``Σ_D R_Dᵀ A_D R_D r`` with each ``A_D`` symmetric, packed upper triangle."""
     ndomain = len(index_offset) - 1
     partial = np.zeros((_NCHUNK // 2, r.shape[0]))
-    for chunk in nb.prange(_NCHUNK // 2):  # type: ignore[attr-defined]
+    for chunk in nb.prange(_NCHUNK // 2):
         out = partial[chunk]
         for k in range(chunk, ndomain, _NCHUNK // 2):
             n = index_offset[k + 1] - index_offset[k]

@@ -426,8 +426,8 @@ class DMDensity:
         dm = torch.from_numpy(np.ascontiguousarray(self.dm, dtype=float)).to(device)
         rho = np.empty(len(points))
         for p0, ao in _ao_blocks(self.mol, points):
-            ao = torch.from_numpy(ao).to(device)
-            rho[p0 : p0 + len(ao)] = ((ao @ dm) * ao).sum(1).cpu().numpy()
+            block = torch.from_numpy(ao).to(device)
+            rho[p0 : p0 + len(ao)] = ((block @ dm) * block).sum(1).cpu().numpy()
         return rho
 
     def potential(self, points: np.ndarray, batch: int = 500) -> np.ndarray:

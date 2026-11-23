@@ -46,9 +46,9 @@ def from_pyscf(auxmol: gto.Mole, coeffs: np.ndarray) -> TensorMap:
         blocks.setdefault(key, {}).setdefault(atom, []).append(values)
     keys, out = [], []
     for (ell, z), atoms in sorted(blocks.items()):
-        values = np.stack([np.concatenate(atoms[a], axis=1) for a in sorted(atoms)])
-        n_atoms, n_members, n_rad, n_m = values.shape
-        values = values.transpose(0, 3, 1, 2).reshape(n_atoms, n_m, n_members * n_rad)
+        stacked = np.stack([np.concatenate(atoms[a], axis=1) for a in sorted(atoms)])
+        n_atoms, n_members, n_rad, n_m = stacked.shape
+        values = stacked.transpose(0, 3, 1, 2).reshape(n_atoms, n_m, n_members * n_rad)
         if np.ndim(coeffs) > 1:
             properties = Labels(
                 ["ensemble_member", "n"],
