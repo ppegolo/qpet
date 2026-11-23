@@ -16,10 +16,6 @@ dependencies = [
   "vesin",
 ]
 
-[project.optional-dependencies]
-numba = ["numba", "threadpoolctl"]
-gpu4pyscf = ["gpu4pyscf-cuda13x>=1.9.2"]
-
 keywords = [
   "machine learning",
   "quantum chemistry",
@@ -36,6 +32,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Chemistry",
   "Topic :: Scientific/Engineering :: Physics",
 ]
+
+[project.optional-dependencies]
+numba = ["numba", "threadpoolctl"]
+gpu4pyscf = ["gpu4pyscf-cuda13x>=1.9.2"]
 
 ### ======================================================================== ###
 
