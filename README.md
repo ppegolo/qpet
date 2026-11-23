@@ -36,8 +36,8 @@ mf.kernel()                   # the SCF starts from the predicted density
   `backend="fast"` runs the same weights through an inference-only
   reimplementation for large systems.
 - **`RIDensity`, `DMDensity`**: densities that carry their geometry, from RI
-  coefficients or from an AO density matrix: `density`, `potential`
-  (`exclude=i` for the potential at nucleus `i`), `integral`, `dipole`,
+  coefficients or from an AO density matrix: `density`, `potential`,
+  `potential_at_nuclei`, `integral`, `dipole`,
   `quadrupole`, `select_atoms`. `RIDensity.fit` is the Coulomb-metric fit of a
   DFT density matrix (`fit_coefficients` for several at once),
   `RIDensity.normalized` the projection, `coulomb_distance` the Coulomb norm

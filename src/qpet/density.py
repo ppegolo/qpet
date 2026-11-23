@@ -57,10 +57,12 @@ def nuclear_potential(
     return v
 
 
-def _nuclei(mol: gto.Mole, points: np.ndarray, exclude: int | None) -> np.ndarray:
-    """Potential of the nuclei of ``mol``, all but atom ``exclude``."""
-    keep = np.arange(mol.natm) != (-1 if exclude is None else exclude)
-    return nuclear_potential(mol.atom_coords()[keep], mol.atom_charges()[keep], points)
+def _other_nuclei(mol: gto.Mole) -> np.ndarray:
+    """Potential at every nucleus of ``mol`` of all the other nuclei, shape (natm,)."""
+    r = mol.atom_coords()
+    dist = np.linalg.norm(r[:, None] - r[None], axis=2)
+    np.fill_diagonal(dist, np.inf)
+    return (mol.atom_charges() / dist).sum(axis=1)
 
 
 def _ao_blocks(mol: gto.Mole, points: np.ndarray) -> Iterator[tuple[int, np.ndarray]]:
@@ -296,7 +298,6 @@ class RIDensity:
         *,
         fast: bool | None = None,
         batch: int = 2000,
-        exclude: int | None = None,
     ) -> np.ndarray:
         """
         Electrostatic potential: nuclei minus electrons, or minus a spin density.
@@ -305,8 +306,6 @@ class RIDensity:
             (float32 on a GPU, ~1e-5 relative error) instead of libcint.
             ``None`` uses it on a GPU from :data:`FAST_ESP_MIN_POINTS` points
             on, when its fit to the basis passes; ``True`` forces it.
-        :param exclude: atom whose nucleus is left out, for the potential at
-            that nucleus.
         """
         evaluator = (
             None if fast is False else self._fast_esp(len(points), force=bool(fast))
@@ -316,8 +315,15 @@ class RIDensity:
         else:
             v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
         if self.nuclei:
-            v += _nuclei(self.auxmol, points, exclude)
+            v += nuclear_potential(
+                self.auxmol.atom_coords(), self.auxmol.atom_charges(), points
+            )
         return v
+
+    def potential_at_nuclei(self) -> np.ndarray:
+        """Potential at every nucleus, its own charge left out, shape (natm,)."""
+        v = -_aux_potential(self.auxmol, self.coeffs, self.auxmol.atom_coords(), 2000)
+        return v + _other_nuclei(self.auxmol) if self.nuclei else v
 
     def _fast_esp(self, n_points: int, *, force: bool) -> FastESP | None:
         import torch
@@ -408,15 +414,10 @@ class DMDensity:
             rho[p0 : p0 + len(ao)] = ((ao @ dm) * ao).sum(1).cpu().numpy()
         return rho
 
-    def potential(
-        self, points: np.ndarray, batch: int = 500, *, exclude: int | None = None
-    ) -> np.ndarray:
+    def potential(self, points: np.ndarray, batch: int = 500) -> np.ndarray:
         """
         On the GPU from :data:`FAST_ESP_MIN_POINTS` points on when gpu4pyscf
         is installed.
-
-        :param exclude: atom whose nucleus is left out, for the potential at
-            that nucleus.
         """
         v = None
         if len(points) >= FAST_ESP_MIN_POINTS:
@@ -434,8 +435,16 @@ class DMDensity:
                 ints = self.mol.intor("int1e_grids", grids=points[p0 : p0 + batch])
                 v[p0 : p0 + batch] = -(ints.reshape(len(ints), -1) @ self.dm.ravel())
         if self.nuclei:
-            v += _nuclei(self.mol, points, exclude)
+            v += nuclear_potential(
+                self.mol.atom_coords(), self.mol.atom_charges(), points
+            )
         return v
+
+    def potential_at_nuclei(self) -> np.ndarray:
+        """Potential at every nucleus, its own charge left out, shape (natm,)."""
+        electrons = DMDensity(self.mol, self.dm, nuclei=False)
+        v = electrons.potential(self.mol.atom_coords())
+        return v + _other_nuclei(self.mol) if self.nuclei else v
 
     def __repr__(self) -> str:
         return f"DMDensity(natm={self.mol.natm}, nao={self.mol.nao})"
@@ -466,14 +475,22 @@ class Ensemble:
         """Density of every member, shape (n_members, n_points)."""
         return _aux_density(self.auxmol, self.coeffs, points)
 
-    def potential(
-        self, points: np.ndarray, batch: int = 2000, *, exclude: int | None = None
-    ) -> np.ndarray:
+    def potential(self, points: np.ndarray, batch: int = 2000) -> np.ndarray:
         """Potential of every member, shape (n_members, n_points)."""
         v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
         if self.nuclei:
-            v += _nuclei(self.auxmol, points, exclude)
+            v += nuclear_potential(
+                self.auxmol.atom_coords(), self.auxmol.atom_charges(), points
+            )
         return v
+
+    def potential_at_nuclei(self) -> np.ndarray:
+        """
+        Potential of every member at every nucleus, its own charge left out,
+        shape (n_members, natm).
+        """
+        v = -_aux_potential(self.auxmol, self.coeffs, self.auxmol.atom_coords(), 2000)
+        return v + _other_nuclei(self.auxmol) if self.nuclei else v
 
     def std(self, observable: Callable[[RIDensity], np.ndarray]) -> np.ndarray:
         """Standard deviation over the members of ``observable(member)``."""

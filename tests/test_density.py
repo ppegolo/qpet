@@ -154,23 +154,26 @@ def test_bare_nucleus_is_coulomb():
     np.testing.assert_allclose(v, 2.0 / np.linalg.norm(points, axis=1))
 
 
-def test_potential_at_a_nucleus_excludes_it(water_ri):
+def test_potential_at_nuclei_leaves_out_the_nucleus_itself(water_ri):
     mol, dm, auxmol, coeffs = water_ri
     r, z = mol.atom_coords(), mol.atom_charges()
-    others = z[1:] @ (1 / np.linalg.norm(r[1:] - r[0], axis=1))
-    with mol.with_rinv_origin(r[0]):
+    others = z[[0, 2]] @ (1 / np.linalg.norm(r[[0, 2]] - r[1], axis=1))
+    with mol.with_rinv_origin(r[1]):
         electrons = np.einsum("ij,ji", mol.intor("int1e_rinv"), dm)
-    v_dm = DMDensity(mol, dm).potential(r[:1], exclude=0)[0]
-    assert v_dm == pytest.approx(others - electrons, abs=1e-10)
-    point = gto.fakemol_for_charges(r[:1])
+    v_dm = DMDensity(mol, dm).potential_at_nuclei()
+    assert v_dm.shape == (3,)
+    assert v_dm[1] == pytest.approx(others - electrons, abs=1e-10)
+    point = gto.fakemol_for_charges(r[1:2])
     electrons = coeffs @ gto.mole.intor_cross("int2c2e", auxmol, point).ravel()
     rho = RIDensity(auxmol, coeffs)
-    assert rho.potential(r[:1], exclude=0)[0] == pytest.approx(
-        others - electrons, abs=1e-10
-    )
-    members = Ensemble(auxmol, np.stack([coeffs, coeffs]))
+    assert rho.potential_at_nuclei()[1] == pytest.approx(others - electrons, abs=1e-10)
+    spin = RIDensity(auxmol, coeffs, nuclei=False)
+    assert spin.potential_at_nuclei()[1] == pytest.approx(-electrons, abs=1e-10)
+    members = Ensemble(auxmol, np.stack([coeffs, 2 * coeffs]))
     np.testing.assert_allclose(
-        members.potential(r[:1], exclude=0)[:, 0], others - electrons, atol=1e-10
+        members.potential_at_nuclei()[:, 1],
+        [others - electrons, others - 2 * electrons],
+        atol=1e-10,
     )
     with np.errstate(divide="ignore"):
         assert np.isinf(rho.potential(r[:1])[0])
