@@ -1,21 +1,15 @@
-# qpet examples
-
-## `water_density_cube.py`
-
-Computes the electron density of a water molecule with a metatomic ML model
-and with DFT, writing each to a Gaussian CUBE file.
+# Water: density and potential as cube files
 
 ```bash
-cd examples
-python water_density_cube.py
+python water_density_cube.py model.pt
 ```
 
-Outputs:
+Predicts the density of a water molecule with an exported metatomic model, runs
+the ωB97M-V/def2-TZVPD reference with PySCF, and writes the density and the
+electrostatic potential of both on one grid:
 
-- `water_density_ml.cube` — ML-predicted density (requires a metatomic model
-  saved as `pet-scfbench.pt` in this folder; skipped if absent).
-- `water_density_dft.cube` — PBE / def2-svp DFT reference density.
+- `water_density_ml.cube`, `water_esp_ml.cube`
+- `water_density_dft.cube`, `water_esp_dft.cube`
 
-`OUTPUT_NAME`, `BASIS_NAME`, and `BASIS_DEFINITION` at the top of the script
-are model-specific and must match the auxiliary basis the model was trained
-on. Adjust them for your own model.
+`AUX_BASIS` and `HEAD` at the top of the script are the auxiliary basis and the
+output name of the model.
