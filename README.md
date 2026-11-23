@@ -8,6 +8,8 @@ DFT references: density and electrostatic potential on points, multipoles, cube
 files, and SCF calculations started from the prediction. Lengths are in bohr
 and outputs in atomic units, except `build_mole` and file I/O (Å).
 
+Trained models (PET-ρ-OMol25) are at https://huggingface.co/lab-cosmo/pet-rho.
+
 ## Usage
 
 ```python
