@@ -10,7 +10,8 @@ import pytest
 import torch
 from _dummy_model import fixed_model, to_tensormap
 
-from qpet import DensityModel, aux_integrals, direction, to_system
+from qpet import DensityModel, aux_integrals, to_system
+from qpet.normalize import direction
 
 RHO, SPIN, ENSEMBLE = "mtt::rho", "mtt::rho_spin", "mtt::aux::rho_ensemble"
 AUX = "def2-svp-jkfit"
@@ -66,14 +67,14 @@ def test_density_is_projected_to_the_electron_count(water_ri):
 
 
 def test_guard_stays_quiet_on_a_small_shift(water_ri):
-    model = _model(water_ri, ["rho"], guard=0.05)
+    model = _model(water_ri, ["rho"], warn_shift=0.05)
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
         model.predict(water_ri[0])
 
 
 def test_spin_is_projected_to_the_unpaired_electrons(water_ri, water_cation):
-    p = _model(water_ri, ["rho", "spin"], guard=1.0).predict(water_cation)
+    p = _model(water_ri, ["rho", "spin"], warn_shift=1.0).predict(water_cation)
     assert p.rho.integral() == pytest.approx(9.0, abs=1e-10)
     assert p.spin.integral() == pytest.approx(1.0, abs=1e-10)
     assert p.rho.nuclei and not p.spin.nuclei
@@ -81,9 +82,8 @@ def test_spin_is_projected_to_the_unpaired_electrons(water_ri, water_cation):
 
 def test_spin_of_a_singlet_is_zero_unless_asked(water_ri):
     mol = water_ri[0]
-    assert (
-        not _model(water_ri, ["rho", "spin"], guard=1.0).predict(mol).spin.coeffs.any()
-    )
+    model = _model(water_ri, ["rho", "spin"], warn_shift=1.0)
+    assert not model.predict(mol).spin.coeffs.any()
     kept = _model(
         water_ri, ["rho", "spin"], broken_symmetry=True, normalize=None
     ).predict(mol)
@@ -92,7 +92,8 @@ def test_spin_of_a_singlet_is_zero_unless_asked(water_ri):
 
 def test_ensemble_is_recentred_on_the_prediction_and_projected(water_ri, members):
     mol, _, auxmol, _ = water_ri
-    p = _model(water_ri, ["rho", "rho_ensemble"], members, guard=1.0).predict(mol)
+    model = _model(water_ri, ["rho", "rho_ensemble"], members, warn_shift=1.0)
+    p = model.predict(mol)
     ens = p.rho_ensemble
     assert len(ens) == 4
     np.testing.assert_allclose(ens.coeffs.mean(axis=0), p.rho.coeffs, atol=1e-12)
@@ -116,7 +117,7 @@ def test_raw_ensemble_is_still_recentred(water_ri, members):
 
 
 def test_predict_many_matches_predict(water_ri, water_cation):
-    model = _model(water_ri, ["rho", "spin"], guard=1.0)
+    model = _model(water_ri, ["rho", "spin"], warn_shift=1.0)
     many = model.predict_many([water_ri[0], water_cation])
     np.testing.assert_allclose(
         many[1].spin.coeffs, model.predict(water_cation).spin.coeffs

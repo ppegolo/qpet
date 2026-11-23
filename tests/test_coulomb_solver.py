@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pytest
 import scipy.linalg
@@ -88,3 +90,9 @@ def test_direction_switches_to_iterative_solver_by_size(cluster, monkeypatch):
     monkeypatch.setattr(qpet.normalize, "ITERATIVE_COULOMB_NAUX", auxmol.nao)
     direction(auxmol, "coulomb")
     assert len(calls) == 1
+
+
+def test_missing_extra_points_to_qpet_numba(cluster, monkeypatch):
+    monkeypatch.setitem(sys.modules, "qpet._coulomb_solver", None)
+    with pytest.raises(ImportError, match=r"qpet\[numba\]"):
+        direction(cluster[0], "coulomb", iterative=True)

@@ -13,9 +13,9 @@ import torch
 from pyscf import gto
 
 from qpet.backends import Backend
-from qpet.basis import make_auxmol
+from qpet.basis import aux_integrals, make_auxmol
 from qpet.density import Ensemble, RIDensity
-from qpet.normalize import Metric, aux_integrals, direction
+from qpet.normalize import Metric, direction
 
 HEADS = ("rho", "spin", "rho_ensemble", "spin_ensemble")
 
@@ -55,9 +55,9 @@ class DensityModel:
         2S on spin, see :mod:`qpet.normalize`), or ``None`` for the raw output.
     :param broken_symmetry: keep the predicted spin density of singlets. By
         default it is zero: the spin head was trained on open shells only.
-    :param guard: warn when the projection moves more than this fraction of
-        the electron count, a sign that the prediction is broken. The
-        projection is applied regardless.
+    :param warn_shift: warn when the projection moves more than this fraction
+        of the electron count, a sign that the prediction is broken. It only
+        warns: the projection is applied regardless.
     :param backend_options: forwarded to the backend (``max_atoms_per_pass``,
         ``compile``, ``autocast_dtype`` for ``"fast"``).
     """
@@ -73,7 +73,7 @@ class DensityModel:
         backend: Literal["metatomic", "fast"] = "metatomic",
         normalize: Metric | None = "coulomb",
         broken_symmetry: bool = False,
-        guard: float = 1e-3,
+        warn_shift: float = 1e-3,
         **backend_options: Any,
     ) -> None:
         unknown = sorted(set(heads) - set(HEADS))
@@ -85,7 +85,7 @@ class DensityModel:
         self.heads = dict(heads)
         self.normalize = normalize
         self.broken_symmetry = broken_symmetry
-        self.guard = guard
+        self.warn_shift = warn_shift
         outputs = {
             name: heads[role.removesuffix("_ensemble")]
             if role.endswith("_ensemble")
@@ -118,7 +118,12 @@ class DensityModel:
     def predict_many(
         self, mols: Sequence[gto.Mole], *, batch_size: int = 1
     ) -> list[Prediction]:
-        """``[predict(mol) for mol in mols]``, ``batch_size`` molecules per pass."""
+        """
+        ``[predict(mol) for mol in mols]``, ``batch_size`` molecules per pass.
+
+        For isolated molecules (no ``cell``). The fast backend evaluates one
+        molecule per pass whatever ``batch_size``.
+        """
         out: list[Prediction] = []
         for start in range(0, len(mols), batch_size):
             out += self._predict(mols[start : start + batch_size], None)
@@ -166,10 +171,10 @@ class DensityModel:
                 if role not in coeffs:
                     continue
                 shift[role] = targets[role] - q @ coeffs[role]
-                if abs(shift[role]) > self.guard * mol.nelectron:
+                if abs(shift[role]) > self.warn_shift * mol.nelectron:
                     warnings.warn(
                         f"the {role} prediction of {_label(mol)} is off by "
-                        f"{shift[role]:+.3f}, more than {self.guard:g} of its "
+                        f"{shift[role]:+.3f}, more than {self.warn_shift:g} of its "
                         f"{mol.nelectron} electrons: projected anyway",
                         RuntimeWarning,
                         stacklevel=4,

@@ -13,10 +13,11 @@ from qpet import (
     RIDensity,
     becke_grid,
     fit_coefficients,
+    make_auxmol,
     nmae,
-    nuclear_potential,
     tensormap_coefficients,
 )
+from qpet.density import nuclear_potential
 
 
 @pytest.fixture(scope="module")
@@ -224,3 +225,24 @@ def test_coulomb_distance_is_the_coulomb_norm_of_the_difference(water_ri):
     assert rho.coulomb_distance(RIDensity(auxmol, 0.9 * coeffs)) == pytest.approx(
         d @ auxmol.intor("int2c2e") @ d
     )
+
+
+def test_ensemble_rejects_coefficients_of_the_wrong_shape(water_ri):
+    _, _, auxmol, coeffs = water_ri
+    with pytest.raises(ValueError, match="does not match the auxiliary basis"):
+        Ensemble(auxmol, coeffs)
+    with pytest.raises(ValueError, match="does not match the auxiliary basis"):
+        Ensemble(auxmol, np.stack([coeffs[:-1]] * 2))
+
+
+def test_coulomb_distance_rejects_another_basis_or_geometry(water_ri):
+    mol, _, auxmol, coeffs = water_ri
+    other = make_auxmol(mol, "def2-universal-jfit")
+    rho = RIDensity(auxmol, coeffs)
+    twin = RIDensity(make_auxmol(mol, "def2-svp-jkfit"), coeffs)
+    assert rho.coulomb_distance(twin) == pytest.approx(0, abs=1e-12)
+    with pytest.raises(ValueError, match="same auxiliary basis"):
+        rho.coulomb_distance(RIDensity(other, np.zeros(other.nao)))
+    shifted = auxmol.set_geom_(auxmol.atom_coords() + 0.1, unit="Bohr", inplace=False)
+    with pytest.raises(ValueError, match="same auxiliary basis"):
+        rho.coulomb_distance(RIDensity(shifted, coeffs))

@@ -1,4 +1,4 @@
-"""The closed-form ESP against libcint, and the dispatch that chooses between them."""
+"""The closed-form ESP against libcint, and its opt-in through ``fast=True``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pyscf import gto
 from pyscf.data.nist import BOHR as BOHR_TO_ANG
 from pyscf.df.addons import make_auxmol
 
-from qpet.density import FAST_ESP_MIN_POINTS, RIDensity
+from qpet.density import FAST_ESP_MIN_POINTS, Ensemble, RIDensity
 
 torch = pytest.importorskip("torch")
 
@@ -32,8 +32,7 @@ def system():
 def _reference_electronic(auxmol, coefficients, points_bohr):
     """libcint's answer for the electronic potential alone.
 
-    ``fast=False`` is load-bearing: without it the reference would dispatch to
-    the very evaluator under test on any machine with a GPU.
+    ``fast=False`` keeps the reference off the evaluator under test.
     """
     density = RIDensity(auxmol, coefficients, nuclei=False)
     return -density.potential(points_bohr, fast=False)
@@ -110,32 +109,52 @@ def test_unknown_backend_is_rejected():
         FastESP(gto.M(atom="He 0 0 0", basis="sto-3g", verbose=0), backend="cuda")
 
 
-def test_small_grid_stays_on_libcint(system):
-    """Too few points to repay the fit, so ``fast=None`` answers with libcint,
-    even after a forced closed-form call on the same density."""
+def test_libcint_is_the_default_and_fast_is_opt_in(system, monkeypatch):
+    """Above ``FAST_ESP_MIN_POINTS`` the default is still libcint, even on a GPU."""
     auxmol, coefficients = system
     density = RIDensity(auxmol, coefficients)
-    points = np.random.default_rng(4).uniform(-6, 8, (FAST_ESP_MIN_POINTS - 1, 3))
+    points = np.random.default_rng(4).uniform(-6, 8, (FAST_ESP_MIN_POINTS + 1, 3))
 
     libcint = density.potential(points, fast=False)
-    forced = density.potential(points, fast=True)
+    assert np.array_equal(density.potential(points), libcint)
+    assert density._fast[0] is None
+
+    fast = density.potential(points, fast=True)
+    assert density._fast[0] is not None
     tolerance = 1e-5 if torch.cuda.is_available() else 1e-10
-    assert np.abs(forced - libcint).max() / np.abs(libcint).max() < tolerance
-    # Both went through libcint, so this is equality and not a tolerance.
+    assert np.abs(fast - libcint).max() / np.abs(libcint).max() < tolerance
+    if torch.cuda.is_available():
+        assert not np.array_equal(fast, libcint)
     assert np.array_equal(density.potential(points), libcint)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="auto dispatch needs a GPU")
-def test_auto_dispatch_takes_the_fast_path_on_a_large_grid(system):
-    """A small grid must not settle the question for a later large one."""
+def test_ensemble_builds_the_kernel_once(system, monkeypatch):
+    from qpet import esp_fast
+
     auxmol, coefficients = system
-    density = RIDensity(auxmol, coefficients)
-    rng = np.random.default_rng(5)
+    members = coefficients * np.array([0.9, 1.0, 1.1])[:, None]
+    ensemble = Ensemble(auxmol, members)
+    points = np.random.default_rng(5).uniform(-6, 8, (300, 3))
 
-    density.potential(rng.uniform(-6, 8, (10, 3)))
-    points = rng.uniform(-6, 8, (FAST_ESP_MIN_POINTS + 1, 3))
+    built = []
+    original = esp_fast.FastESP.__init__
 
-    auto = density.potential(points)
-    slow = density.potential(points, fast=False)
-    assert not np.array_equal(auto, slow), "the large grid should not have used libcint"
-    assert np.abs(auto - slow).max() / np.abs(slow).max() < 1e-5
+    def counting(self, *args, **kwargs):
+        built.append(1)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(esp_fast.FastESP, "__init__", counting)
+
+    libcint = ensemble.potential(points)
+    assert not built
+    fast = ensemble.potential(points, fast=True)
+    tolerance = 1e-5 if torch.cuda.is_available() else 1e-10
+    assert np.abs(fast - libcint).max() / np.abs(libcint).max() < tolerance
+    assert len(built) == 1
+
+    ensemble.std(lambda d: d.potential(points, fast=True))
+    assert len(built) == 1
+
+    fresh = Ensemble(auxmol, members)
+    fresh.std(lambda d: d.potential(points, fast=True))
+    assert len(built) == 2

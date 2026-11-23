@@ -12,28 +12,28 @@ density: True for a total density, False for a spin density.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 import numpy as np
 from pyscf import df, gto, lib
 from pyscf.dft import gen_grid
 
-from qpet import moments
-from qpet.basis import copy_nuclei, make_auxmol
-from qpet.normalize import Metric, aux_integrals, project
+from qpet.basis import aux_integrals, copy_nuclei, make_auxmol
+from qpet.normalize import Metric, project
 
 if TYPE_CHECKING:
     from metatensor.torch import TensorMap
 
     from qpet.esp_fast import FastESP
 
-logger = logging.getLogger(__name__)
-
-#: Grid size below which :meth:`RIDensity.potential` stays on libcint.
+#: Grid size below which :meth:`DMDensity.potential` stays on libcint.
 FAST_ESP_MIN_POINTS = 1000
+
+_ALPHA = 1e-12
+_FLAT = gto.M(atom="X 0 0 0", basis={"X": [[0, [_ALPHA, 1.0]]]}, verbose=0)
+_SCALE = (2 * _ALPHA / np.pi) ** -0.75
 
 #: Points per block of basis-function values.
 _BLOCK = 128 * gen_grid.BLKSIZE
@@ -149,16 +149,6 @@ def nmae(a: np.ndarray, b: np.ndarray, weights: np.ndarray, norm: float) -> floa
     return 100 * float(weights @ np.abs(a - b)) / norm
 
 
-class ScalarField(Protocol):
-    """A density evaluated on points: :class:`RIDensity`, :class:`DMDensity`."""
-
-    nuclei: bool
-
-    def density(self, points: np.ndarray) -> np.ndarray: ...
-
-    def potential(self, points: np.ndarray) -> np.ndarray: ...
-
-
 def _aux_potential(
     auxmol: gto.Mole, coeffs: np.ndarray, points: np.ndarray, batch: int
 ) -> np.ndarray:
@@ -168,6 +158,33 @@ def _aux_potential(
         fake = gto.fakemol_for_charges(points[p0 : p0 + batch])
         v[..., p0 : p0 + batch] = coeffs @ gto.mole.intor_cross("int2c2e", auxmol, fake)
     return v
+
+
+def _electronic_moment(
+    auxmol: gto.Mole, coeffs: np.ndarray, origin: np.ndarray, intor: str, comp: int
+) -> np.ndarray:
+    """``-Σ_k c_k ∫ r^n φ_k dr`` about ``origin``, from the cross integral of ``φ_k``
+    with a flat Gaussian divided by the Gaussian's normalization."""
+    with auxmol.with_common_orig(origin):
+        ints = gto.intor_cross(intor, auxmol, _FLAT, comp=comp)
+    return -_SCALE * (ints.reshape(comp, auxmol.nao) @ coeffs)
+
+
+def _fast_esp(auxmol: gto.Mole, holder: list[FastESP | None]) -> FastESP:
+    """The evaluator kept in the one-element ``holder``, built on first use."""
+    evaluator = holder[0]
+    if evaluator is None:
+        import torch
+
+        from qpet.esp_fast import FastESP
+
+        cuda = torch.cuda.is_available()
+        evaluator = holder[0] = FastESP(
+            auxmol,
+            device="cuda" if cuda else "cpu",
+            dtype=torch.float32 if cuda else torch.float64,
+        )
+    return evaluator
 
 
 class RIDensity:
@@ -191,8 +208,7 @@ class RIDensity:
         self.auxmol = auxmol
         self.coeffs = coeffs
         self.nuclei = nuclei
-        self._fast: FastESP | None = None
-        self._no_fast = False
+        self._fast: list[FastESP | None] = [None]
 
     @classmethod
     def fit(
@@ -269,6 +285,15 @@ class RIDensity:
     def coulomb_distance(self, other: RIDensity) -> float:
         """``∫∫ Δρ(r) Δρ(r') / |r - r'|`` of the difference with ``other``,
         a density in the same auxiliary basis."""
+        a, b = self.auxmol, other.auxmol
+        if (
+            a.nao != b.nao
+            or not np.allclose(a.atom_coords(), b.atom_coords())
+            or a.ao_labels() != b.ao_labels()
+        ):
+            raise ValueError(
+                "densities are not on the same auxiliary basis and geometry"
+            )
         d = self.coeffs - other.coeffs
         return float(d @ self.auxmol.intor("int2c2e") @ d)
 
@@ -290,12 +315,20 @@ class RIDensity:
         Electrons count as negative charge.
         """
         origin = np.zeros(3) if origin is None else origin
-        return moments.dipole(self.auxmol, self.coeffs, origin, self.nuclei)
+        mu = _electronic_moment(self.auxmol, self.coeffs, origin, "int1e_r", 3)
+        if self.nuclei:
+            mu += self.auxmol.atom_charges() @ (self.auxmol.atom_coords() - origin)
+        return mu
 
     def quadrupole(self, origin: np.ndarray | None = None) -> np.ndarray:
         """Primitive quadrupole tensor about ``origin`` (bohr, default 0)."""
         origin = np.zeros(3) if origin is None else origin
-        return moments.quadrupole(self.auxmol, self.coeffs, origin, self.nuclei)
+        q = _electronic_moment(self.auxmol, self.coeffs, origin, "int1e_rr", 9)
+        q = q.reshape(3, 3)
+        if self.nuclei:
+            r = self.auxmol.atom_coords() - origin
+            q += np.einsum("i,ix,iy->xy", self.auxmol.atom_charges(), r, r)
+        return q
 
     def density(self, points: np.ndarray) -> np.ndarray:
         return aux_density(self.auxmol, self.coeffs, points)
@@ -304,22 +337,18 @@ class RIDensity:
         self,
         points: np.ndarray,
         *,
-        fast: bool | None = None,
+        fast: bool = False,
         batch: int = 2000,
     ) -> np.ndarray:
         """
         Electrostatic potential: nuclei minus electrons, or minus a spin density.
 
         :param fast: the closed-form kernel of :class:`qpet.esp_fast.FastESP`
-            (float32 on a GPU, ~1e-5 relative error) instead of libcint.
-            ``None`` uses it on a GPU from :data:`FAST_ESP_MIN_POINTS` points
-            on, when its fit to the basis passes; ``True`` forces it.
+            (float32 on a GPU, ~1e-5 relative error; float64 on the CPU)
+            instead of libcint. ``batch`` applies to libcint only.
         """
-        evaluator = (
-            None if fast is False else self._fast_esp(len(points), force=bool(fast))
-        )
-        if evaluator is not None:
-            v = -evaluator.potential(self.coeffs, points)
+        if fast:
+            v = -_fast_esp(self.auxmol, self._fast).potential(self.coeffs, points)
         else:
             v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
         if self.nuclei:
@@ -332,27 +361,6 @@ class RIDensity:
         """Potential at every nucleus, its own charge left out, shape (natm,)."""
         v = -_aux_potential(self.auxmol, self.coeffs, self.auxmol.atom_coords(), 2000)
         return v + _other_nuclei(self.auxmol) if self.nuclei else v
-
-    def _fast_esp(self, n_points: int, *, force: bool) -> FastESP | None:
-        import torch
-
-        cuda = torch.cuda.is_available()
-        if not force and (self._no_fast or not cuda or n_points < FAST_ESP_MIN_POINTS):
-            return None
-        if self._fast is None:
-            from qpet.esp_fast import FastESP
-
-            dtype = torch.float32 if cuda else torch.float64
-            try:
-                self._fast = FastESP(
-                    self.auxmol, device="cuda" if cuda else "cpu", dtype=dtype
-                )
-            except RuntimeError as error:
-                if force:
-                    raise
-                self._no_fast = True
-                logger.info("closed-form ESP unavailable, using libcint: %s", error)
-        return self._fast
 
     def __repr__(self) -> str:
         return f"RIDensity(natm={self.auxmol.natm}, naux={self.auxmol.nao})"
@@ -469,23 +477,40 @@ class Ensemble:
     def __init__(
         self, auxmol: gto.Mole, coeffs: np.ndarray, *, nuclei: bool = True
     ) -> None:
+        if coeffs.ndim != 2 or coeffs.shape[1] != auxmol.nao:
+            raise ValueError(
+                f"coeffs shape {coeffs.shape} does not match the auxiliary basis "
+                f"(n_members, {auxmol.nao})"
+            )
         self.auxmol = auxmol
         self.coeffs = coeffs
         self.nuclei = nuclei
+        self._fast: list[FastESP | None] = [None]
 
     def __len__(self) -> int:
         return len(self.coeffs)
 
     def __getitem__(self, k: int) -> RIDensity:
-        return RIDensity(self.auxmol, self.coeffs[k], nuclei=self.nuclei)
+        member = RIDensity(self.auxmol, self.coeffs[k], nuclei=self.nuclei)
+        member._fast = self._fast
+        return member
 
     def density(self, points: np.ndarray) -> np.ndarray:
         """Density of every member, shape (n_members, n_points)."""
         return aux_density(self.auxmol, self.coeffs, points)
 
-    def potential(self, points: np.ndarray, batch: int = 2000) -> np.ndarray:
-        """Potential of every member, shape (n_members, n_points)."""
-        v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
+    def potential(
+        self, points: np.ndarray, *, fast: bool = False, batch: int = 2000
+    ) -> np.ndarray:
+        """
+        Potential of every member, shape (n_members, n_points); ``fast`` as in
+        :meth:`RIDensity.potential`, with one evaluator for all the members.
+        """
+        if fast:
+            evaluator = _fast_esp(self.auxmol, self._fast)
+            v = -np.stack([evaluator.potential(c, points) for c in self.coeffs])
+        else:
+            v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
         if self.nuclei:
             v += nuclear_potential(
                 self.auxmol.atom_coords(), self.auxmol.atom_charges(), points

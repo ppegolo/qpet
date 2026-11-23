@@ -34,7 +34,7 @@ class Calculator:
     """Evaluate a frozen PET density model.
 
     :param artifact_path: file written by
-        :func:`petfast.export.export_checkpoint`.
+        :func:`qpet.backends.fast.export.export`.
     :param device: torch device to run on.
     :param dtype: ``torch.float64`` (default, matches training) or
         ``torch.float32``.

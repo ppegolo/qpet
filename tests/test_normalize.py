@@ -61,7 +61,7 @@ def test_project_broadcasts_over_members(water_ri):
 def test_aux_integrals_match_the_flat_gaussian_overlap(water_ri):
     """Two routes to ``∫ φ_k dr``: the closed form here and the overlap with the
     flat Gaussian behind the multipoles."""
-    from qpet.moments import _FLAT, _SCALE
+    from qpet.density import _FLAT, _SCALE
 
     _, _, auxmol, _ = water_ri
     overlap = _SCALE * gto.intor_cross("int1e_ovlp", auxmol, _FLAT).ravel()

@@ -69,8 +69,9 @@ class AttentionBlock(nn.Module):
     """Multi-head attention with a per-key cutoff gate.
 
     The gate enters as the additive bias ``log(clamp(c_k, 1e-15))``, which depends
-    on the key index only. Both backends in :mod:`petfast.attention` exploit that:
-    the Triton kernel takes the gate as a vector, and the SDPA fallback passes the
+    on the key index only. Both backends in :mod:`qpet.backends.fast.attention`
+    exploit that: the Triton kernel takes the gate as a vector, and the SDPA
+    fallback passes the
     bias with shape ``(n_nodes, 1, 1, n_tokens)`` so it broadcasts over queries
     instead of being materialised as ``(n_nodes, T, T)`` the way metatrain's
     ``repeat`` does. Neither ever holds the attention matrix in global memory --
@@ -87,7 +88,7 @@ class AttentionBlock(nn.Module):
         self.num_heads = num_heads
         self.head_dim = total_dim // num_heads
         self.scale = self.head_dim**-0.5
-        # None lets petfast.attention choose; "triton"/"sdpa" pin it, for tests.
+        # None lets qpet.backends.fast.attention choose; "triton"/"sdpa" pin it.
         self.attention_backend: str | None = None
 
     def forward(self, x: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:

@@ -30,6 +30,8 @@ import numpy as np
 import scipy.linalg
 from pyscf import gto
 
+from qpet.basis import aux_integrals
+
 Metric = Literal["coulomb", "overlap", "identity", "coulomb_atom"]
 
 #: Auxiliary-basis size from which ``J⁻¹q`` is solved iteratively.
@@ -37,18 +39,6 @@ ITERATIVE_COULOMB_NAUX = 10000
 
 _MIN_REGULARISATION = 1e-10
 _MAX_REGULARISATION = 1e-4
-
-
-def aux_integrals(auxmol: gto.Mole) -> np.ndarray:
-    """``q_k = ∫ φ_k dr`` per auxiliary function (zero for l > 0), shape (naux,)."""
-    q = np.zeros(auxmol.nao)
-    ao_loc = auxmol.ao_loc_nr()
-    for ib in range(auxmol.nbas):
-        if auxmol.bas_angular(ib) == 0:
-            prim = (np.pi / auxmol.bas_exp(ib)) ** 1.5 / np.sqrt(4 * np.pi)
-            ctr = auxmol._libcint_ctr_coeff(ib)
-            q[ao_loc[ib] : ao_loc[ib] + ctr.shape[1]] = prim @ ctr
-    return q
 
 
 def regularised_cho_factor(
@@ -128,7 +118,14 @@ def direction(
         if iterative is None:
             iterative = auxmol.nao >= ITERATIVE_COULOMB_NAUX
         if iterative:
-            from qpet._coulomb_solver import CoulombSolver
+            try:
+                from qpet._coulomb_solver import CoulombSolver
+            except ImportError as err:
+                raise ImportError(
+                    f"the iterative solver for {auxmol.nao} auxiliary functions "
+                    "needs numba and threadpoolctl: install `qpet[numba]`, or "
+                    "pass iterative=False"
+                ) from err
 
             x = CoulombSolver(auxmol).solve(q)
         else:

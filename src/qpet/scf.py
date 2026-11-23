@@ -15,6 +15,7 @@ from qpet.model import Prediction
 
 _GRID_CHUNK = 4096
 _J_FLOATS = 100_000_000
+_GPU4PYSCF_TESTED = "1.9.2"
 
 #: GGA functional of the guess for a meta-GGA target, whose τ is not known from
 #: ρ. Other meta-GGAs fall back to PBE.
@@ -144,6 +145,27 @@ def _predicted_density_on_gpu(channels: Any) -> Iterator[None]:
         gpu_numint.eval_rho = original
 
 
+def _check_gpu4pyscf() -> None:
+    import gpu4pyscf
+    import gpu4pyscf.df.int3c2e_bdiv as int3c2e_bdiv
+    import gpu4pyscf.dft.numint as gpu_numint
+
+    present = (
+        all(
+            hasattr(gpu_numint, name)
+            for name in ("eval_rho", "gen_grid_range", "NumInt", "_GDFTOpt")
+        )
+        and hasattr(gpu_numint.NumInt, "block_loop")
+        and hasattr(gpu_numint._GDFTOpt, "sort_orbitals")
+        and hasattr(int3c2e_bdiv, "contract_int3c2e_auxvec")
+    )
+    if not present:
+        raise RuntimeError(
+            f"gpu4pyscf {gpu4pyscf.__version__} lacks internals that to_scf uses; "
+            f"qpet was tested with gpu4pyscf {_GPU4PYSCF_TESTED}"
+        )
+
+
 def to_scf(prediction: Prediction, mf: Any) -> Any:
     """
     Set the initial guess of the Kohn-Sham object ``mf`` from the prediction.
@@ -176,6 +198,8 @@ def to_scf(prediction: Prediction, mf: Any) -> Any:
     h = mf.get_hcore()
     xp = importlib.import_module(type(h).__module__.split(".")[0])
     gpu = xp is not np
+    if gpu:
+        _check_gpu4pyscf()
 
     grids = mf.grids
     if grids.coords is None:  # built and pruned as mf does on its first iteration

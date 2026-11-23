@@ -118,7 +118,7 @@ def _readout_weights(readout, n_groups: int):
 
 
 def _heads_and_readouts(backend, target_name: str):
-    """Head and readout weights of one target, in petfast's layout.
+    """Head and readout weights of one target, in the layout of the fast backend.
 
     Heads come as one list of head sets (one set, or one per ensemble member with
     ``scope="head"``), each holding ``heads_per_layer`` MLPs. Readouts come as one

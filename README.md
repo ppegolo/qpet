@@ -32,7 +32,8 @@ mf.kernel()                   # the SCF starts from the predicted density
   ensembles `rho_ensemble`, `spin_ensemble`). Predictions are projected to N
   electrons and 2S unpaired ones in the Coulomb metric by default
   (`normalize=` another metric, or `None` for the raw output);
-  `predict(mol, cell=...)` lets the model see periodic neighbours.
+  `predict(mol, cell=...)` lets the model see periodic neighbours;
+  `predict_many` runs a list of isolated molecules.
   `backend="fast"` runs the same weights through an inference-only
   reimplementation for large systems.
 - **`RIDensity`, `DMDensity`**: densities that carry their geometry, from RI
@@ -49,7 +50,8 @@ mf.kernel()                   # the SCF starts from the predicted density
   atom of every point for Becke populations) and the normalized mean absolute
   error of two densities on one; `aux_density` evaluates several densities
   of one auxiliary basis in a single pass.
-- **`CubeGrid`, `write_cube`, `read_cube`**: regular grids and cube files.
+- **`CubeGrid`, `Cube`, `write_cube`, `read_cube`**: regular grids and cube
+  files; `read_cube` returns a `Cube`.
 - **`to_system`**: the metatomic `System` of a `Mole`, with its charge and
   spin multiplicity, to call a model directly.
 - **`to_scf`**: the initial guess of a PySCF or gpu4pyscf Kohn-Sham object
@@ -59,11 +61,20 @@ mf.kernel()                   # the SCF starts from the predicted density
 ## Installation
 
 ```bash
-pip install -e .   # pyscf, torch, metatomic, vesin, numba, scipy
+pip install -e .               # pyscf, torch, metatomic, vesin, scipy
+pip install -e ".[numba]"      # iterative Coulomb solver, from 10,000 auxiliary functions
+pip install -e ".[gpu4pyscf]"  # GPU integrals and to_scf on the GPU
 ```
 
 GPU features use gpu4pyscf and CuPy when installed (`to_scf` on a `.to_gpu()`
-object, the integrals of `RIDensity.fit` and `DMDensity.potential`); the fast backend's export from a checkpoint needs metatrain.
+object, the integrals of `RIDensity.fit` and `DMDensity.potential`).
+`to_scf` relies on gpu4pyscf internals and was tested with gpu4pyscf 1.9.2.
+The fast backend's export from a checkpoint needs metatrain.
+
+The model runs on the `device` given to `DensityModel`. `RIDensity.fit`,
+`DMDensity.density` and `DMDensity.potential` use a GPU when one is available
+and give the same float64 result. The float32 closed-form ESP kernel is used
+only with `potential(points, fast=True)`.
 
 ## Development
 

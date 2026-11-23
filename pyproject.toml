@@ -10,13 +10,15 @@ authors = [{ name = "Paolo Pegolo" }]
 
 dependencies = [
   "pyscf>=2.14",
-  "numba",
   "scipy",
-  "threadpoolctl",
   "torch>=2.0.0",
   "metatomic-torch>=0.1.15",
   "vesin",
 ]
+
+[project.optional-dependencies]
+numba = ["numba", "threadpoolctl"]
+gpu4pyscf = ["gpu4pyscf-cuda13x>=1.9.2"]
 
 keywords = [
   "machine learning",

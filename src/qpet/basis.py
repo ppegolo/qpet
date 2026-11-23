@@ -1,32 +1,17 @@
-"""Auxiliary-basis resolution, including even-tempered (ETB) bases.
-
-An RI density is only meaningful together with the auxiliary basis its
-coefficients were fitted in, so every entry point that builds an auxiliary
-``Mole`` goes through :func:`make_auxmol`. On top of the PySCF basis names that
-``pyscf.df.addons.make_auxmol`` accepts, this adds the even-tempered
-specification ``"etb:<ao_basis>:<beta>"`` used by metatrain's density losses
-(see ``metatrain.utils.pyscf_loss``), so a model trained against an ETB
-auxiliary basis can be evaluated with the same string it was trained with.
-"""
+"""Auxiliary bases: PySCF names and even-tempered specs ``"etb:<ao_basis>:<beta>"``."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import cache
 
+import numpy as np
 from pyscf import df, gto
 from pyscf.data import elements
 
-__all__ = ["is_etb_spec", "make_auxmol", "resolve_aux_basis"]
 
-
-def is_etb_spec(aux_basis: str) -> bool:
-    """
-    Whether ``aux_basis`` is an even-tempered specification.
-
-    :param aux_basis: Auxiliary basis name or ``"etb:<ao_basis>:<beta>"``.
-    :return: True for the ETB form.
-    """
+def _is_etb_spec(aux_basis: str) -> bool:
+    """Whether ``aux_basis`` has the form ``"etb:<ao_basis>:<beta>"``."""
     parts = aux_basis.split(":")
     return len(parts) == 3 and parts[0].lower() == "etb"
 
@@ -36,22 +21,12 @@ def _build_etb_basis(
     ao_basis: str, atomic_numbers: tuple[int, ...], beta: float
 ) -> dict[str, object]:
     """
-    Build an even-tempered auxiliary basis with ``pyscf.df.aug_etb``.
+    ``pyscf.df.aug_etb`` of a dummy molecule with one atom of each element.
 
-    The basis is generated from a dummy molecule holding one atom of each
-    element in the *orbital* basis ``ao_basis``, which is how SCFBench-style RI
-    datasets (and metatrain's density losses) generate theirs. Taking the
-    orbital basis from the spec rather than from the molecule keeps the
-    auxiliary basis identical to the one the coefficients were fitted in, even
-    if the molecule is built in a different orbital basis.
-
-    :param ao_basis: Orbital (not auxiliary) basis name, e.g. ``"def2-svp"``.
-    :param atomic_numbers: Unique atomic numbers to build the basis for.
-    :param beta: Even-tempering ratio.
-    :return: Mapping from element symbol to basis specification.
+    The orbital basis ``ao_basis`` comes from the spec, as in metatrain's density
+    losses, so the basis does not depend on the basis the molecule is built in.
     """
     symbols = [elements.ELEMENTS[n] for n in atomic_numbers]
-    # Spread the atoms out so the dummy molecule builds without warnings.
     mol = gto.Mole()
     mol.atom = "\n".join(f"{s} 0.0 0.0 {i * 10.0}" for i, s in enumerate(symbols))
     mol.basis = ao_basis
@@ -63,17 +38,9 @@ def _build_etb_basis(
     return df.aug_etb(mol, beta=beta)
 
 
-def resolve_aux_basis(aux_basis: str, mol: gto.Mole) -> str | dict[str, object]:
-    """
-    Resolve an auxiliary-basis specification for a given molecule.
-
-    :param aux_basis: A PySCF basis name (e.g. ``"def2-universal-jfit"``) or an
-        even-tempered specification ``"etb:<ao_basis>:<beta>"``, e.g.
-        ``"etb:def2-svp:2.0"``.
-    :param mol: Built ``Mole`` whose elements the basis must cover.
-    :return: The name unchanged, or the generated ETB basis dictionary.
-    """
-    if not is_etb_spec(aux_basis):
+def _resolve_aux_basis(aux_basis: str, mol: gto.Mole) -> str | dict[str, object]:
+    """The name unchanged, or the ETB basis of the elements of ``mol``."""
+    if not _is_etb_spec(aux_basis):
         return aux_basis
 
     _, ao_basis, beta = aux_basis.split(":")
@@ -87,21 +54,13 @@ def resolve_aux_basis(aux_basis: str, mol: gto.Mole) -> str | dict[str, object]:
 
 def make_auxmol(mol: gto.Mole, aux_basis: str) -> gto.Mole:
     """
-    Build the auxiliary ``Mole`` for ``mol``, ETB specifications included.
+    Auxiliary ``Mole`` of ``mol``, ETB specs included.
 
-    Drop-in replacement for ``pyscf.df.addons.make_auxmol`` that keeps the
-    nuclei of ``mol``: PySCF rebuilds the atom table without the ECP, so its
-    auxiliary ``Mole`` reports full-``Z`` nuclear charges (and electron count)
-    for elements whose cores the calculation never had. Here the effective
-    charges and nuclear model of ``mol`` are copied over, so
-    ``auxmol.atom_charges()``, ``auxmol.nelectron`` and every nuclear term
-    built from them agree with the orbital molecule.
-
-    :param mol: Built ``Mole`` (orbital basis).
-    :param aux_basis: Auxiliary basis name or ``"etb:<ao_basis>:<beta>"``.
-    :return: Auxiliary-basis ``Mole``.
+    Unlike ``pyscf.df.addons.make_auxmol``, which rebuilds the atoms without the
+    ECP, the effective nuclear charges and nuclear model of ``mol`` are kept, so
+    ``auxmol.nelectron`` and the nuclear terms agree with ``mol``.
     """
-    auxmol = df.addons.make_auxmol(mol, resolve_aux_basis(aux_basis, mol))
+    auxmol = df.addons.make_auxmol(mol, _resolve_aux_basis(aux_basis, mol))
     return copy_nuclei(mol, auxmol)
 
 
@@ -112,3 +71,15 @@ def copy_nuclei(
     for column in (gto.mole.CHARGE_OF, gto.mole.NUC_MOD_OF):
         target._atm[:, column] = source._atm[atoms, column]
     return target
+
+
+def aux_integrals(auxmol: gto.Mole) -> np.ndarray:
+    """``q_k = ∫ φ_k dr`` per auxiliary function (zero for l > 0), shape (naux,)."""
+    q = np.zeros(auxmol.nao)
+    ao_loc = auxmol.ao_loc_nr()
+    for ib in range(auxmol.nbas):
+        if auxmol.bas_angular(ib) == 0:
+            prim = (np.pi / auxmol.bas_exp(ib)) ** 1.5 / np.sqrt(4 * np.pi)
+            ctr = auxmol._libcint_ctr_coeff(ib)
+            q[ao_loc[ib] : ao_loc[ib] + ctr.shape[1]] = prim @ ctr
+    return q

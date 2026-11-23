@@ -7,7 +7,7 @@ import pytest
 from pyscf import df, gto, scf
 
 from qpet import RIDensity, becke_grid, make_auxmol
-from qpet.basis import is_etb_spec, resolve_aux_basis
+from qpet.basis import _is_etb_spec, _resolve_aux_basis
 
 
 @pytest.fixture(scope="module")
@@ -29,12 +29,12 @@ def water():
     ],
 )
 def test_is_etb_spec(spec, expected):
-    assert is_etb_spec(spec) is expected
+    assert _is_etb_spec(spec) is expected
 
 
 def test_named_basis_is_passed_through(water):
     """A plain basis name must reach PySCF untouched."""
-    assert resolve_aux_basis("def2-universal-jfit", water) == "def2-universal-jfit"
+    assert _resolve_aux_basis("def2-universal-jfit", water) == "def2-universal-jfit"
     assert (
         make_auxmol(water, "def2-universal-jfit").nao
         == df.addons.make_auxmol(water, "def2-universal-jfit").nao
