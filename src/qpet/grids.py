@@ -18,8 +18,6 @@ from pathlib import Path
 import numpy as np
 from pyscf import dft, gto
 
-from qpet.conditioning import nuclear_charges_of
-
 
 @dataclass(frozen=True)
 class CubeGrid:
@@ -99,9 +97,7 @@ def write_cube(
     ]
     lines += [
         f"{z:5d}{q:12.6f}" + "".join(f"{x:12.6f}" for x in r)
-        for z, q, r in zip(
-            numbers, nuclear_charges_of(mol), mol.atom_coords(), strict=True
-        )
+        for z, q, r in zip(numbers, mol.atom_charges(), mol.atom_coords(), strict=True)
     ]
     rows = values.reshape(-1, grid.shape[2])
     with open(path, "w") as f:

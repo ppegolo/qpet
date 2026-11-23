@@ -8,7 +8,7 @@ at displacement ``R`` is
 with ``P`` a homogeneous polynomial of degree ``l`` and ``gammainc`` the
 *regularised* lower incomplete gamma. It is exact at every distance, so there is
 no near field to special-case, and it replaces the libcint call
-:meth:`qpet.fields.RIDensity.potential` otherwise makes for every (auxiliary
+:meth:`qpet.RIDensity.potential` otherwise makes for every (auxiliary
 function, grid point) pair.
 
 ``P`` and the per-primitive radial weights are recovered by least squares from
@@ -154,7 +154,7 @@ class FastESP:
     The fit depends only on the auxiliary molecule, so build once and reuse across
     coefficient vectors and grids.
 
-    :param auxmol: the auxiliary ``Mole`` an :class:`~qpet.fields.RIDensity` carries.
+    :param auxmol: the auxiliary ``Mole`` an :class:`~qpet.RIDensity` carries.
     :param device: torch device for the evaluation. ``"cuda"`` is the default and
         falls back to the CPU when no GPU is present; any other value is honoured
         as asked for.

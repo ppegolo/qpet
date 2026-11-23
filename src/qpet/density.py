@@ -20,9 +20,8 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from pyscf import df, gto, lib
 
+from qpet import moments
 from qpet.basis import copy_nuclei, make_auxmol
-from qpet.conditioning import nuclear_charges_of
-from qpet.moments import get_ri_dipole, get_ri_quadrupole
 from qpet.normalize import Metric, aux_integrals, project
 
 if TYPE_CHECKING:
@@ -171,7 +170,7 @@ class RIDensity:
         """
         Integral of each atom's functions, shape (natm,).
 
-        Atomic charges are ``nuclear_charges_of(auxmol) - populations()``;
+        Atomic charges are ``auxmol.atom_charges() - populations()``;
         for a spin density these are the spin populations.
         """
         slices = self.auxmol.aoslice_by_atom()
@@ -185,16 +184,12 @@ class RIDensity:
         Electrons count as negative charge.
         """
         origin = np.zeros(3) if origin is None else origin
-        return get_ri_dipole(
-            self.auxmol, self.coeffs, origin, include_nuclear=self.nuclei
-        )
+        return moments.dipole(self.auxmol, self.coeffs, origin, self.nuclei)
 
     def quadrupole(self, origin: np.ndarray | None = None) -> np.ndarray:
         """Primitive quadrupole tensor about ``origin`` (bohr, default 0)."""
         origin = np.zeros(3) if origin is None else origin
-        return get_ri_quadrupole(
-            self.auxmol, self.coeffs, origin, include_nuclear=self.nuclei
-        )
+        return moments.quadrupole(self.auxmol, self.coeffs, origin, self.nuclei)
 
     def density(self, points: np.ndarray, batch: int = 5000) -> np.ndarray:
         rho = np.empty(len(points))
@@ -224,7 +219,7 @@ class RIDensity:
             v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
         if self.nuclei:
             v += nuclear_potential(
-                self.auxmol.atom_coords(), nuclear_charges_of(self.auxmol), points
+                self.auxmol.atom_coords(), self.auxmol.atom_charges(), points
             )
         return v
 
@@ -292,8 +287,18 @@ class DMDensity:
         with self.mol.with_common_orig(origin):
             mu = -np.einsum("xij,ji->x", self.mol.intor("int1e_r"), self.dm)
         if self.nuclei:
-            mu += nuclear_charges_of(self.mol) @ (self.mol.atom_coords() - origin)
+            mu += self.mol.atom_charges() @ (self.mol.atom_coords() - origin)
         return mu
+
+    def quadrupole(self, origin: np.ndarray | None = None) -> np.ndarray:
+        origin = np.zeros(3) if origin is None else origin
+        with self.mol.with_common_orig(origin):
+            rr = self.mol.intor("int1e_rr").reshape(3, 3, self.mol.nao, -1)
+        q = -np.einsum("xyij,ji->xy", rr, self.dm)
+        if self.nuclei:
+            r = self.mol.atom_coords() - origin
+            q += np.einsum("i,ix,iy->xy", self.mol.atom_charges(), r, r)
+        return q
 
     def density(self, points: np.ndarray, batch: int = 5000) -> np.ndarray:
         rho = np.empty(len(points))
@@ -309,7 +314,7 @@ class DMDensity:
             v[p0 : p0 + batch] = -(ints.reshape(len(ints), -1) @ self.dm.ravel())
         if self.nuclei:
             v += nuclear_potential(
-                self.mol.atom_coords(), nuclear_charges_of(self.mol), points
+                self.mol.atom_coords(), self.mol.atom_charges(), points
             )
         return v
 
@@ -343,7 +348,7 @@ class Ensemble:
         v = -_aux_potential(self.auxmol, self.coeffs, points, batch)
         if self.nuclei:
             v += nuclear_potential(
-                self.auxmol.atom_coords(), nuclear_charges_of(self.auxmol), points
+                self.auxmol.atom_coords(), self.auxmol.atom_charges(), points
             )
         return v
 

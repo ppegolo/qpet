@@ -58,15 +58,14 @@ def test_project_broadcasts_over_members(water_ri):
     np.testing.assert_allclose(fixed[2], project(auxmol, members[2], 10.0))
 
 
-def test_aux_integrals_match_the_ghost_charge(water_ri):
-    """Two routes to ``∫ φ_k dr``: the closed form here and the ghost-orbital
-    cross integral behind ``RIDensity.charge``."""
-    from qpet.moments import get_ri_charge
+def test_aux_integrals_match_the_flat_gaussian_overlap(water_ri):
+    """Two routes to ``∫ φ_k dr``: the closed form here and the overlap with the
+    flat Gaussian behind the multipoles."""
+    from qpet.moments import _FLAT, _SCALE
 
-    _, _, auxmol, coeffs = water_ri
-    assert float(get_ri_charge(auxmol, coeffs)) == pytest.approx(
-        -aux_integrals(auxmol) @ coeffs, abs=1e-8
-    )
+    _, _, auxmol, _ = water_ri
+    overlap = _SCALE * gto.intor_cross("int1e_ovlp", auxmol, _FLAT).ravel()
+    np.testing.assert_allclose(aux_integrals(auxmol), overlap, atol=1e-8)
 
 
 def test_unknown_metric_raises(water_ri):

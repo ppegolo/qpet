@@ -4,9 +4,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     import torch
     from metatensor.torch import TensorMap
+
+
+def tensormap_coefficients(tensor: TensorMap, n_members: int = 1) -> list[np.ndarray]:
+    """
+    Coefficients of every system of a TensorMap (training targets, raw model
+    outputs) in PySCF order, as float64 arrays: (naux,) per system, or
+    (n_members, naux) for an ensemble output.
+    """
+    return [c.detach().cpu().double().numpy() for c in to_pyscf(tensor, n_members)]
 
 
 def to_pyscf(tensor: TensorMap, n_members: int = 1) -> list[torch.Tensor]:

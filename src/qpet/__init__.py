@@ -6,8 +6,8 @@ and electrostatic potential on points, multipoles, cube files, SCF guesses.
 Lengths are in bohr except in :func:`build_mole` and file I/O.
 """
 
+from ._tensormap import tensormap_coefficients
 from .basis import make_auxmol
-from .conditioning import nuclear_charges_of
 from .density import DMDensity, Ensemble, RIDensity, nuclear_potential
 from .grids import CubeGrid, becke_grid, read_cube, write_cube
 from .model import DensityModel, Prediction
@@ -33,10 +33,10 @@ __all__ = [
     "build_mole",
     "direction",
     "make_auxmol",
-    "nuclear_charges_of",
     "nuclear_potential",
     "project",
     "read_cube",
+    "tensormap_coefficients",
     "to_scf",
     "write_cube",
 ]

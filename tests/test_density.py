@@ -7,7 +7,7 @@ import pytest
 from _dummy_model import to_tensormap
 from pyscf import gto, scf
 
-from qpet import DMDensity, Ensemble, RIDensity
+from qpet import DMDensity, Ensemble, RIDensity, becke_grid, tensormap_coefficients
 from qpet.density import _DIST_FLOOR, nuclear_potential
 
 
@@ -64,6 +64,28 @@ def test_dm_dipole_matches_pyscf(water_ri):
     np.testing.assert_allclose(RIDensity(auxmol, coeffs).dipole(), expected, atol=1e-2)
 
 
+def test_quadrupole_matches_the_grid_integral(water_ri):
+    mol, dm, auxmol, coeffs = water_ri
+    origin = np.array([0.3, -0.2, 0.5])
+    points, weights = becke_grid(mol, level=5)
+    r, nuc = points - origin, mol.atom_coords() - origin
+    nuclei = np.einsum("i,ix,iy->xy", mol.atom_charges(), nuc, nuc)
+    for rho in (DMDensity(mol, dm), RIDensity(auxmol, coeffs)):
+        electrons = np.einsum("p,px,py->xy", weights * rho.density(points), r, r)
+        np.testing.assert_allclose(
+            rho.quadrupole(origin), nuclei - electrons, atol=1e-5
+        )
+
+
+def test_neutral_ecp_molecule_has_an_origin_independent_dipole(hydrogen_iodide_ri):
+    """26 electrons against the 25 + 1 nuclear charges the ECP leaves, not 53 + 1."""
+    _, _, auxmol, coeffs = hydrogen_iodide_ri
+    rho = RIDensity(auxmol, coeffs)
+    np.testing.assert_allclose(
+        rho.dipole(), rho.dipole(np.array([1.0, -2.0, 0.5])), atol=0.05
+    )
+
+
 def test_select_atoms_partitions_the_potential(water_ri):
     _, _, auxmol, coeffs = water_ri
     rho = RIDensity(auxmol, coeffs)
@@ -96,6 +118,13 @@ def test_from_tensormap_round_trips(water_ri):
     np.testing.assert_array_equal(
         RIDensity.from_tensormap(to_tensormap(auxmol, coeffs), auxmol).coeffs, coeffs
     )
+
+
+def test_tensormap_coefficients_of_ensemble_members(water_ri):
+    _, _, auxmol, coeffs = water_ri
+    members = coeffs * np.arange(1, 4)[:, None]
+    (out,) = tensormap_coefficients(to_tensormap(auxmol, members), n_members=3)
+    np.testing.assert_array_equal(out, members)
 
 
 def test_ensemble_members_are_densities(water_ri):
