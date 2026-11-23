@@ -47,7 +47,8 @@ mf.kernel()                   # the SCF starts from the predicted density
   their spread on any observable is the error estimate.
 - **`becke_grid`, `atomic_becke_grid`, `nmae`**: quadrature grids (with the
   atom of every point for Becke populations) and the normalized mean absolute
-  error of two densities on one.
+  error of two densities on one; `aux_density` evaluates several densities
+  of one auxiliary basis in a single pass.
 - **`CubeGrid`, `write_cube`, `read_cube`**: regular grids and cube files.
 - **`to_system`**: the metatomic `System` of a `Mole`, with its charge and
   spin multiplicity, to call a model directly.

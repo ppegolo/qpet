@@ -66,20 +66,28 @@ def _other_nuclei(mol: gto.Mole) -> np.ndarray:
 
 
 def _ao_blocks(mol: gto.Mole, points: np.ndarray) -> Iterator[tuple[int, np.ndarray]]:
-    """Screened basis-function values on consecutive blocks of points."""
+    """
+    Screened basis-function values on consecutive blocks of points, written
+    into one buffer: a block is valid until the next one is asked for.
+    """
+    buffer = np.empty(_BLOCK * mol.nao)
     for p0 in range(0, len(points), _BLOCK):
         block = points[p0 : p0 + _BLOCK]
         mask = gen_grid.make_mask(mol, block)
-        yield p0, mol.eval_gto("GTOval", block, non0tab=mask)
+        yield p0, mol.eval_gto("GTOval", block, non0tab=mask, out=buffer)
 
 
-def _aux_density(
-    auxmol: gto.Mole, coeffs: np.ndarray, points: np.ndarray
-) -> np.ndarray:
-    """``Σ_k c_k φ_k(r)`` on points; ``coeffs`` of shape (..., naux)."""
+def aux_density(auxmol: gto.Mole, coeffs: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """
+    ``Σ_k c_k φ_k(r)`` on points: several densities on one auxiliary basis in
+    one pass over the basis functions.
+
+    :param coeffs: shape (..., naux).
+    :return: Shape (..., n_points).
+    """
     rho = np.empty(coeffs.shape[:-1] + (len(points),))
     for p0, ao in _ao_blocks(auxmol, points):
-        rho[..., p0 : p0 + len(ao)] = coeffs @ ao.T
+        rho[..., p0 : p0 + len(ao)] = (ao @ coeffs.T).T
     return rho
 
 
@@ -290,7 +298,7 @@ class RIDensity:
         return moments.quadrupole(self.auxmol, self.coeffs, origin, self.nuclei)
 
     def density(self, points: np.ndarray) -> np.ndarray:
-        return _aux_density(self.auxmol, self.coeffs, points)
+        return aux_density(self.auxmol, self.coeffs, points)
 
     def potential(
         self,
@@ -473,7 +481,7 @@ class Ensemble:
 
     def density(self, points: np.ndarray) -> np.ndarray:
         """Density of every member, shape (n_members, n_points)."""
-        return _aux_density(self.auxmol, self.coeffs, points)
+        return aux_density(self.auxmol, self.coeffs, points)
 
     def potential(self, points: np.ndarray, batch: int = 2000) -> np.ndarray:
         """Potential of every member, shape (n_members, n_points)."""
