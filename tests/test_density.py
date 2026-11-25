@@ -199,6 +199,17 @@ def test_density_matches_unscreened_basis_values(water_ri):
     )
 
 
+def test_gradient_matches_unscreened_basis_derivatives(water_ri):
+    mol, _, auxmol, coeffs = water_ri
+    points, _ = becke_grid(mol, level=1)
+    derivatives = auxmol.eval_gto("GTOval_sph_deriv1", points)[1:]
+    np.testing.assert_allclose(
+        RIDensity(auxmol, coeffs).gradient(points),
+        (derivatives @ coeffs).T,
+        atol=1e-10,
+    )
+
+
 def test_nmae_of_a_density_against_zero_is_100(water_ri):
     mol, dm, _, _ = water_ri
     points, weights = becke_grid(mol)

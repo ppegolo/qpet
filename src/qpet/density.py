@@ -65,16 +65,20 @@ def _other_nuclei(mol: gto.Mole) -> np.ndarray:
     return (mol.atom_charges() / dist).sum(axis=1)
 
 
-def _ao_blocks(mol: gto.Mole, points: np.ndarray) -> Iterator[tuple[int, np.ndarray]]:
+def _ao_blocks(
+    mol: gto.Mole, points: np.ndarray, deriv: int = 0
+) -> Iterator[tuple[int, np.ndarray]]:
     """
-    Screened basis-function values on consecutive blocks of points, written
-    into one buffer: a block is valid until the next one is asked for.
+    Screened basis-function values (and first derivatives with ``deriv=1``,
+    shape (4, n, nao)) on consecutive blocks of points, written into one
+    buffer: a block is valid until the next one is asked for.
     """
-    buffer = np.empty(_BLOCK * mol.nao)
+    buffer = np.empty((1 + 3 * deriv) * _BLOCK * mol.nao)
+    name = f"GTOval_{'cart' if mol.cart else 'sph'}_deriv1" if deriv else "GTOval"
     for p0 in range(0, len(points), _BLOCK):
         block = points[p0 : p0 + _BLOCK]
         mask = gen_grid.make_mask(mol, block)
-        yield p0, mol.eval_gto("GTOval", block, non0tab=mask, out=buffer)
+        yield p0, mol.eval_gto(name, block, non0tab=mask, out=buffer)
 
 
 def aux_density(auxmol: gto.Mole, coeffs: np.ndarray, points: np.ndarray) -> np.ndarray:
@@ -332,6 +336,13 @@ class RIDensity:
 
     def density(self, points: np.ndarray) -> np.ndarray:
         return aux_density(self.auxmol, self.coeffs, points)
+
+    def gradient(self, points: np.ndarray) -> np.ndarray:
+        """Gradient of the density on points, shape (n_points, 3)."""
+        grad = np.empty((len(points), 3))
+        for p0, ao in _ao_blocks(self.auxmol, points, deriv=1):
+            grad[p0 : p0 + ao.shape[1]] = (ao[1:] @ self.coeffs).T
+        return grad
 
     def potential(
         self,
