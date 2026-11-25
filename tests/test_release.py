@@ -34,7 +34,6 @@ def _on_hub():
 
 @pytest.mark.parametrize("source", ["local", "hub"])
 def test_release_matches_its_export(source, tmp_path, monkeypatch):
-    pytest.importorskip("metatrain")
     monkeypatch.setenv("QPET_CACHE", str(tmp_path / "cache"))
     if source == "local":
         if CHECKPOINT is None:

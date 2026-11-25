@@ -64,17 +64,14 @@ mf.kernel()                   # the SCF starts from the predicted density
 ## Installation
 
 ```bash
-pip install -e .               # pyscf, torch, metatomic, vesin, scipy
+pip install -e .               # pyscf, torch, metatomic, metatrain, vesin, scipy
 pip install -e ".[numba]"      # iterative Coulomb solver, from 10,000 auxiliary functions
-pip install -e ".[metatrain]"  # DensityModel.from_release, export to the fast backend
 pip install -e ".[gpu4pyscf]"  # GPU integrals and to_scf on the GPU
 ```
 
 GPU features use gpu4pyscf and CuPy when installed (`to_scf` on a `.to_gpu()`
 object, the integrals of `RIDensity.fit` and `DMDensity.potential`).
 `to_scf` relies on gpu4pyscf internals and was tested with gpu4pyscf 1.9.2.
-`DensityModel.from_release` and the fast backend's export from a checkpoint
-need metatrain.
 
 The model runs on the `device` given to `DensityModel`. `RIDensity.fit`,
 `DMDensity.density` and `DMDensity.potential` use a GPU when one is available

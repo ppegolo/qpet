@@ -1,7 +1,7 @@
 """The fast backend against the metatomic one, on a real checkpoint.
 
 Skipped unless ``QPET_TEST_CHECKPOINT`` points at a metatrain PET density
-checkpoint; exporting it needs metatrain.
+checkpoint.
 """
 
 from __future__ import annotations

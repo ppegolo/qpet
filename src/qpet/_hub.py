@@ -102,12 +102,7 @@ def _resolve(model: str, size: str | None, version: str) -> tuple[str, str]:
 
 
 def _export(checkpoint: str, path: Path) -> None:
-    try:
-        from metatrain.utils.io import load_model
-    except ImportError as err:
-        raise ImportError(
-            f"exporting {checkpoint} needs metatrain: install `qpet[metatrain]`"
-        ) from err
+    from metatrain.utils.io import load_model
 
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(".partial")

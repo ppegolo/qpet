@@ -13,6 +13,7 @@ dependencies = [
   "scipy",
   "torch>=2.0.0",
   "metatomic-torch>=0.1.15",
+  "metatrain @ git+https://github.com/metatensor/metatrain@561e3ddc7e46b65131acf032af1ca3d830c398de",
   "vesin",
 ]
 
@@ -35,9 +36,6 @@ classifiers = [
 
 [project.optional-dependencies]
 numba = ["numba", "threadpoolctl"]
-metatrain = [
-  "metatrain @ git+https://github.com/metatensor/metatrain@561e3ddc7e46b65131acf032af1ca3d830c398de",
-]
 gpu4pyscf = ["gpu4pyscf-cuda13x>=1.9.2"]
 
 ### ======================================================================== ###

@@ -1,6 +1,6 @@
 """Inference-only PET: the weights of the metatomic model, run several times faster.
 
-Export a metatrain checkpoint once (needs metatrain)::
+Export a metatrain checkpoint once::
 
     python -m qpet.backends.fast.export model.ckpt model.fast
 
