@@ -17,9 +17,10 @@ from pyscf import dft
 from qpet import DensityModel, build_mole, to_scf
 
 mol = build_mole(symbols, positions, basis="def2-svp", ecp="def2-svp")
-model = DensityModel("model.pt", aux_basis="def2-universal-jfit",
-                     heads={"rho": "mtt::rho_c_jfit_coulomb",
-                            "spin": "mtt::rho_c_jfit_coulomb_spin"})
+model = DensityModel.from_release("pet-rho-omol", size="l")   # latest version
+# "pet-rho-omol-nospin", "pet-rho-omol-gap-llpr" (ensembles=True): get_available_models()
+# from_release(checkpoint_path="my.ckpt") exports a local checkpoint;
+# DensityModel("model.pt", aux_basis=..., heads=...) loads an exported model
 p = model.predict(mol)        # Prediction: p.rho, p.spin (RIDensity)
 
 p.rho.potential(points)       # electrostatic potential, nuclei included
@@ -65,13 +66,15 @@ mf.kernel()                   # the SCF starts from the predicted density
 ```bash
 pip install -e .               # pyscf, torch, metatomic, vesin, scipy
 pip install -e ".[numba]"      # iterative Coulomb solver, from 10,000 auxiliary functions
+pip install -e ".[metatrain]"  # DensityModel.from_release, export to the fast backend
 pip install -e ".[gpu4pyscf]"  # GPU integrals and to_scf on the GPU
 ```
 
 GPU features use gpu4pyscf and CuPy when installed (`to_scf` on a `.to_gpu()`
 object, the integrals of `RIDensity.fit` and `DMDensity.potential`).
 `to_scf` relies on gpu4pyscf internals and was tested with gpu4pyscf 1.9.2.
-The fast backend's export from a checkpoint needs metatrain.
+`DensityModel.from_release` and the fast backend's export from a checkpoint
+need metatrain.
 
 The model runs on the `device` given to `DensityModel`. `RIDensity.fit`,
 `DMDensity.density` and `DMDensity.potential` use a GPU when one is available

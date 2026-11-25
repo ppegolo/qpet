@@ -106,6 +106,58 @@ class DensityModel:
         else:
             raise ValueError(f"unknown backend {backend!r}; use 'metatomic' or 'fast'")
 
+    @classmethod
+    def from_release(
+        cls,
+        model: str | None = None,
+        *,
+        size: str | None = None,
+        version: str = "latest",
+        checkpoint_path: str | Path | None = None,
+        aux_basis: str | None = None,
+        heads: Mapping[str, str] | None = None,
+        ensembles: bool = False,
+        **kwargs: Any,
+    ) -> DensityModel:
+        """
+        A released model from https://huggingface.co/lab-cosmo/pet-rho, or a
+        local metatrain checkpoint.
+
+        Releases are ``<model>-<size>-v<version>.ckpt``. The checkpoint is
+        exported with metatrain on first use and cached in ``$QPET_CACHE``
+        (default ``~/.cache/qpet``). The auxiliary basis comes from the model
+        metadata or the model family; the heads are the density, its spin
+        density when the model has one, and their LLPR ensembles.
+
+        :param model: released model, see :func:`qpet.get_available_models`:
+            ``"pet-rho-omol"`` (density and spin), ``"pet-rho-omol-nospin"``
+            (density only), ``"pet-rho-omol-gap-llpr"`` (with the LLPR
+            ensembles).
+        :param size: ``"xs"``, ``"s"``, ``"m"``, ``"l"`` or ``"xl"``; by default
+            the first released of ``"s"``, ``"m"``, ``"xs"``, ``"l"``, ``"xl"``.
+        :param version: ``"1.0.0"``, or ``"latest"`` from the repository (an
+            explicit size and version need no network once cached).
+        :param checkpoint_path: a local ``.ckpt`` instead of ``model``; a file
+            named like a release gives the model name.
+        :param aux_basis: overrides the auxiliary basis of the model.
+        :param heads: overrides the heads read from the outputs.
+        :param ensembles: also evaluate the LLPR ensembles.
+        :param kwargs: forwarded to :class:`DensityModel` (``device``,
+            ``dtype``, ``normalize``...).
+        """
+        from metatomic.torch import load_atomistic_model
+
+        from qpet import _hub
+
+        name, path = _hub.exported_model(model, size, version, checkpoint_path)
+        loaded = load_atomistic_model(str(path))
+        return cls(
+            loaded,
+            aux_basis=aux_basis or _hub.aux_basis(name, loaded),
+            heads=heads or _hub.heads(loaded.capabilities().outputs, ensembles),
+            **kwargs,
+        )
+
     def predict(self, mol: gto.Mole, *, cell: np.ndarray | None = None) -> Prediction:
         """
         Density of ``mol``; charge and spin are read from it.
