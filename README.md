@@ -51,6 +51,9 @@ With the predicted densities, you can:
   `pet-rho-omol-gap-llpr`);
 - start a Kohn-Sham calculation from the predicted density.
 
+`save_release` writes a released model to disk, as its metatrain checkpoint or,
+for a `.pt` output, as a metatomic export.
+
 The docstrings describe the options, and the
 [cookbook recipe](https://atomistic-cookbook.org/examples/pet-rho-omol25/pet-rho-omol25.html)
 shows a complete example.

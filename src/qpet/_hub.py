@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
@@ -70,10 +71,43 @@ def exported_model(
         size, version = _resolve(model, size, version)
     path = cache / f"{model}-{size}-v{version}.pt"
     if not path.exists():
-        from huggingface_hub import hf_hub_download
-
-        _export(hf_hub_download(REPO, path.stem + ".ckpt", subfolder="models"), path)
+        _export(_download(path.stem), path)
     return model, path
+
+
+def save_release(
+    model: str,
+    *,
+    size: str | None = None,
+    version: str = "latest",
+    output: str | Path | None = None,
+) -> Path:
+    """
+    Save a released model to disk: its metatrain checkpoint, or its metatomic
+    export when ``output`` ends in ``.pt``.
+
+    :param model: released model, see :func:`get_available_models`.
+    :param size: model size; the smallest released one by default.
+    :param version: model version; the latest by default.
+    :param output: file to write; ``<model>-<size>-v<version>.ckpt`` in the
+        current directory by default.
+    :return: the path written.
+    """
+    size, version = _resolve(model, size, version.removeprefix("v"))
+    name = f"{model}-{size}-v{version}"
+    output = Path(output or f"{name}.ckpt")
+    if output.suffix == ".pt":
+        source = exported_model(model, size, version, None)[1]
+    else:
+        source = Path(_download(name))
+    shutil.copyfile(source, output)
+    return output
+
+
+def _download(name: str) -> str:
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(REPO, f"{name}.ckpt", subfolder="models")
 
 
 def _resolve(model: str, size: str | None, version: str) -> tuple[str, str]:

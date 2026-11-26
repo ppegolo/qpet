@@ -15,7 +15,7 @@ import pytest
 import torch
 from pyscf import gto
 
-from qpet import DensityModel, get_available_models
+from qpet import DensityModel, get_available_models, save_release
 
 REFERENCE = os.environ.get("QPET_TEST_RELEASE_REFERENCE")
 CHECKPOINT = os.environ.get("QPET_TEST_RELEASE_CHECKPOINT")
@@ -63,5 +63,34 @@ def test_release_matches_its_export(source, tmp_path, monkeypatch):
         gto.M(atom="N 0 0 0; O 0 0 1.15", basis="def2-svp", spin=1),
     ):
         got, expected = release.predict(mol), reference.predict(mol)
+        np.testing.assert_allclose(got.rho.coeffs, expected.rho.coeffs, atol=1e-5)
+        np.testing.assert_allclose(got.spin.coeffs, expected.spin.coeffs, atol=1e-5)
+
+
+def test_saved_release_matches_its_export(tmp_path, monkeypatch):
+    if not _on_hub():
+        pytest.skip("lab-cosmo/pet-rho is not reachable")
+    monkeypatch.setenv("QPET_CACHE", str(tmp_path / "cache"))
+    monkeypatch.chdir(tmp_path)
+    checkpoint = save_release("pet-rho-omol", size="l")
+    exported = save_release("pet-rho-omol", size="l", output="exported.pt")
+    assert checkpoint.name == "pet-rho-omol-l-v1.0.0.ckpt"
+
+    heads = {
+        "rho": "mtt::rho_c_jfit_coulomb",
+        "spin": "mtt::rho_c_jfit_coulomb_spin",
+    }
+    reference = DensityModel(
+        REFERENCE, aux_basis="def2-universal-jfit", heads=heads, dtype=torch.float64
+    )
+    mol = gto.M(atom="N 0 0 0; O 0 0 1.15", basis="def2-svp", spin=1)
+    expected = reference.predict(mol)
+    for release in (
+        DensityModel.from_release(checkpoint_path=checkpoint, dtype=torch.float64),
+        DensityModel(
+            exported, aux_basis="def2-universal-jfit", heads=heads, dtype=torch.float64
+        ),
+    ):
+        got = release.predict(mol)
         np.testing.assert_allclose(got.rho.coeffs, expected.rho.coeffs, atol=1e-5)
         np.testing.assert_allclose(got.spin.coeffs, expected.spin.coeffs, atol=1e-5)

@@ -6,7 +6,7 @@ and electrostatic potential on points, multipoles, cube files, SCF guesses.
 Lengths are in bohr except in :func:`build_mole` and file I/O.
 """
 
-from ._hub import get_available_models
+from ._hub import get_available_models, save_release
 from ._tensormap import tensormap_coefficients
 from .backends.metatomic import to_system
 from .basis import aux_integrals, make_auxmol
@@ -56,6 +56,7 @@ __all__ = [
     "nmae",
     "project",
     "read_cube",
+    "save_release",
     "tensormap_coefficients",
     "to_scf",
     "to_system",
