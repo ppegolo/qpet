@@ -20,13 +20,19 @@ dispersion, like the one in the example below, also need `pyscf-dispersion`.
 ## Quick start
 
 ```python
+import numpy as np
 from pyscf import dft
 from qpet import DensityModel, build_mole, to_scf
 
-mol = build_mole(symbols, positions, basis="def2-svp", ecp="def2-svp")
+# formaldehyde, positions in Å
+symbols = ["C", "O", "H", "H"]
+positions = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.205], [0.0, 0.943, -0.587], [0.0, -0.943, -0.587]]
+mol = build_mole(symbols, positions, basis="def2-svp")
+
 model = DensityModel.from_release("pet-rho-omol", size="l")
 prediction = model.predict(mol)
 
+points = np.array([[0.0, 0.0, 5.0]])  # bohr
 prediction.rho.potential(points)  # electrostatic potential on points
 prediction.rho.dipole()           # dipole moment
 prediction.spin.populations()     # unpaired electrons per atom
